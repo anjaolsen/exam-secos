@@ -54,7 +54,7 @@ tss_t      TSS;
 #define c3_dsc(_d) gdt_flat_dsc(_d,3,SEG_DESC_CODE_XR)
 #define d3_dsc(_d) gdt_flat_dsc(_d,3,SEG_DESC_DATA_RW)
 
-void user2()
+void user1()
 {
    while(1);
 }
@@ -112,7 +112,7 @@ void init_user()
 //    // 2: fix IDT for syscall 48
    int_desc_t *dsc;
    idt_reg_t  idtr;
-   uint32_t   ustack = 0x600000;
+//    uint32_t   ustack = 0x600000;
 
    get_idtr(idtr);
    dsc = &idtr.desc[48];
@@ -123,22 +123,72 @@ void init_user()
    dsc->offset_2 = (uint16_t)(((uint32_t)syscall_isr)>>16);
 
    // 1: enter user
-   asm volatile (
-      "push %0 \n" // ss
-      "push %1 \n" // esp
-      "pushf   \n" // eflags
-      "push %2 \n" // cs
-      "push %3 \n" // eip
-      "iret"
-      ::
-       "i"(d3_sel),
-       "m"(ustack),
-       "i"(c3_sel),
-       "r"(&userland)
-      );
+//    asm volatile (
+//       "push %0 \n" // ss
+//       "push %1 \n" // esp
+//       "pushf   \n" // eflags
+//       "push %2 \n" // cs
+//       "push %3 \n" // eip
+//       "iret"
+//       ::
+//        "i"(d3_sel),
+//        "m"(ustack),
+//        "i"(c3_sel),
+//        "r"(&userland)
+//       );
 }
+
+//=============================================================================
+
+// It is the interrupt 32 that will switch between the two tasks.
+// (irq0 = horloge)
+// It must therefore ;  know if it it interrupts a kernel or a user task
+//                      know if it should switch from user1 to user2 or the opposite
+// put the following things on the stack : if it switches from a kernel task to a user task
+//       "push %0 \n" // ss
+//       "push %1 \n" // esp
+//       "pushf   \n" // eflags
+//       "push %2 \n" // cs
+//       "push %3 \n" // eip
+// and put only the three last if it changes from user to user
+void int32_handler() 
+{
+    asm volatile ("pusha");
+    debug("\n\n\n\n");
+    debug("Int32 handler\n");
+
+    ///3.5: aligner la pile et avoir le bon esp. 
+    asm volatile ("popa; leave ; iret");
+}
+
+void int32_trigger() 
+{
+    debug("int32 trigger\n");
+    asm("int $32"); 
+    //int3();
+    debug("\n\n\n\n");
+    debug("int32 trigger retour\n");
+}
+
+
+//=============================================================================
+
+void init_IDT()
+{
+    idt_reg_t idt_r; 
+    get_idtr(idt_r);   
+
+    int_desc_t *bp_dsc = &idt_r.desc[32];
+
+    bp_dsc->offset_1 = (uint16_t)((uint32_t)int32_handler);
+    bp_dsc->offset_2 = (uint16_t)(((uint32_t)int32_handler)>>16);
+
+}
+
 
 void tp()
 {
    init_user();
+   init_IDT();
+   int32_trigger();
 }
