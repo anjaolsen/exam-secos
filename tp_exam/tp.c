@@ -54,13 +54,53 @@ tss_t      TSS;
 #define c3_dsc(_d) gdt_flat_dsc(_d,3,SEG_DESC_CODE_XR)
 #define d3_dsc(_d) gdt_flat_dsc(_d,3,SEG_DESC_DATA_RW)
 
+// Per-process state
+// struct proc {
+//   char *mem;                   // Start of process memory (kernel address)
+//   uint32_t sz;                     // Size of process memory (bytes)
+//   char *kstack;                // Bottom of kernel stack for this process
+// //   enum procstate state;       // Process state
+// //   volatile int pid;            // Process ID
+// //   struct proc *parent;         // Parent process
+//   struct trapframe *tf;        // Trap frame for current syscall
+//   struct context *context;     // Switch here to run process
+// //   void *chan;                  // If non-zero, sleeping on chan
+// //   int killed;                  // If non-zero, have been killed
+// //   struct file *ofile[NOFILE];  // Open files
+// //   struct inode *cwd;           // Current directory
+// //   char name[16];               // Process name (debugging)
+// };
+
+// static struct proc *proc1;
+// static struct proc *proc2;
+static int incr = 0;
+
+static uint32_t   ustack1 = 0x600000;
+static uint32_t   ustack2 = 0x700000; //0x 100000 = 16^5 = 1M
+
+// void proc* allocprocs(struct proc * p1, struct proc * p2)
+// {
+//   p1->kstack = (char*) 0x6000000; //obsobs! Fiks adressen. 
+//   p2->kstack = (char*) 0x7000000;
+//   p->tf = (struct trapframe*)(p->kstack + KSTACKSIZE) - 1;
+
+//   // Set up new context to start executing at forkret (see below).
+//   p->context = (struct context *)p->tf - 1;
+//   memset(p->context, 0, sizeof(*p->context));
+//   p->context->eip = (uint)forkret;
+//   return p;
+// }
+
 void user1()
 {
+   debug("user1\n");
    while(1);
 }
 
 void user2()
 {
+   debug("user2\n");
+//    asm("int $32");
    while(1);
 }
 
@@ -112,7 +152,21 @@ void init_user()
 //    // 2: fix IDT for syscall 48
    int_desc_t *dsc;
    idt_reg_t  idtr;
-//    uint32_t   ustack = 0x600000;
+
+   // Je dois attribuer Á chaque tache une pile utilisateur ET une pile noyau.
+   // Il faut donc peut-^etre 2 TSS ???
+    
+
+//MON PROBLEME : je ne sais pas comment configurer les zones d adresses 
+//le noyau est identity mappé
+//    . les tâches sont identity mappées
+//    . les tâches possèdent leurs propres PGD/PTB
+//    . les tâches ont une zone de mémoire partagée:
+//      . de la taille d'une page (4KB)
+//      . à l'adresse physique de votre choix
+//      . à des adresses virtuelles différentes
+//    . les tâches doivent avoir leur propre pile noyau (4KB)
+//    . les tâches doivent avoir leur propre pile utilisateur (4KB)
 
    get_idtr(idtr);
    dsc = &idtr.desc[48];
@@ -122,20 +176,7 @@ void init_user()
    dsc->offset_1 = (uint16_t)((uint32_t)syscall_isr);
    dsc->offset_2 = (uint16_t)(((uint32_t)syscall_isr)>>16);
 
-   // 1: enter user
-//    asm volatile (
-//       "push %0 \n" // ss
-//       "push %1 \n" // esp
-//       "pushf   \n" // eflags
-//       "push %2 \n" // cs
-//       "push %3 \n" // eip
-//       "iret"
-//       ::
-//        "i"(d3_sel),
-//        "m"(ustack),
-//        "i"(c3_sel),
-//        "r"(&userland)
-//       );
+
 }
 
 //=============================================================================
@@ -156,12 +197,77 @@ void int32_handler()
     asm volatile ("pusha");
     debug("\n\n\n\n");
     debug("Int32 handler\n");
+    // int var=1;
+    // asm volatile ("mov (%esp), %0\n\t"
+    // : "=r" (var));
+    // asm volatile ("movl $0, %eax");
+    asm volatile ("mov 48(%eax), %esp");
+    // debug("Var: %x", var);
 
-    ///3.5: aligner la pile et avoir le bon esp. 
+    //idea to find out what privilege level we came from: pop/read cs (here: esp+12*4)
+    // and see what privilege level it was...
+
+     //===============================
+    //aller vers une tache
+    // SI dans cs juste avant on dètecte qu on etait dans ring 0, on met ss et esp.
+    // SINON on met juste eflags, cs et eip. 
+    //=========================================
+    // 1: enter user
+//    asm volatile (
+//       "push %0 \n" // ss
+//       "push %1 \n" // esp
+//       "pushf   \n" // eflags
+//       "push %2 \n" // cs
+//       "push %3 \n" // eip
+//       "iret"
+//       ::
+//        "i"(d3_sel),
+//        "m"(ustack),
+//        "i"(c3_sel),
+//        "r"(&userland)
+//       );
+
+    if (incr == 1){
+        //display number
+        debug("Display\n");
+        incr = 0;
+        asm volatile (
+            "push %0 \n" // ss
+            "push %1 \n" // esp
+            "pushf   \n" // eflags
+            "push %2 \n" // cs
+            "push %3 \n" // eip
+            "iret"
+            ::
+            "i"(d3_sel),
+            "m"(ustack1),
+            "i"(c3_sel),
+            "r"(&user1)
+        );
+    } else {
+        //increment number
+        debug("Increment\n");
+        incr = 1;
+        asm volatile (
+            "push %0 \n" // ss
+            "push %1 \n" // esp
+            "pushf   \n" // eflags
+            "push %2 \n" // cs
+            "push %3 \n" // eip
+            "iret"
+            ::
+            "i"(d3_sel),
+            "m"(ustack2),
+            "i"(c3_sel),
+            "r"(&user2)
+        );
+    }
+
+    ///3.5: aligner la pile et avoir le bon esp.
     asm volatile ("popa; leave ; iret");
 }
 
-void int32_trigger() 
+void int32_trigger()  //for test purposes
 {
     debug("int32 trigger\n");
     asm("int $32"); 
@@ -186,9 +292,40 @@ void init_IDT()
 }
 
 
+// void
+// userinit(void)
+// {
+//   struct proc *p;
+//   extern uchar _binary_initcode_start[], _binary_initcode_size[];
+  
+//   p = allocproc();
+//   initproc = p;
+
+//   // Initialize memory from initcode.S
+//   p->sz = PAGE;
+//   p->mem = kalloc(p->sz);
+//   memmove(p->mem, _binary_initcode_start, (int)_binary_initcode_size);
+
+//   memset(p->tf, 0, sizeof(*p->tf));
+//   p->tf->cs = (SEG_UCODE << 3) | DPL_USER;
+//   p->tf->ds = (SEG_UDATA << 3) | DPL_USER;
+//   p->tf->es = p->tf->ds;
+//   p->tf->ss = p->tf->ds;
+//   p->tf->eflags = FL_IF;
+//   p->tf->esp = p->sz;
+//   p->tf->eip = 0;  // beginning of initcode.S
+
+//   safestrcpy(p->name, "initcode", sizeof(p->name));
+//   p->cwd = namei("/");
+
+//   p->state = RUNNABLE;
+// }
+
 void tp()
 {
    init_user();
    init_IDT();
-   int32_trigger();
+   //enable interrupts
+   asm volatile("sti"); 
+   while(1);
 }
