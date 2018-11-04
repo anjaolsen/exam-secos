@@ -7,6 +7,8 @@
 #include <segmem.h>
 #include <intr.h>
 #include <info.h>
+#include <cr.h>
+#include <pagemem.h>
 
 extern info_t *info;
 
@@ -54,53 +56,22 @@ tss_t      TSS;
 #define c3_dsc(_d) gdt_flat_dsc(_d,3,SEG_DESC_CODE_XR)
 #define d3_dsc(_d) gdt_flat_dsc(_d,3,SEG_DESC_DATA_RW)
 
-// Per-process state
-// struct proc {
-//   char *mem;                   // Start of process memory (kernel address)
-//   uint32_t sz;                     // Size of process memory (bytes)
-//   char *kstack;                // Bottom of kernel stack for this process
-// //   enum procstate state;       // Process state
-// //   volatile int pid;            // Process ID
-// //   struct proc *parent;         // Parent process
-//   struct trapframe *tf;        // Trap frame for current syscall
-//   struct context *context;     // Switch here to run process
-// //   void *chan;                  // If non-zero, sleeping on chan
-// //   int killed;                  // If non-zero, have been killed
-// //   struct file *ofile[NOFILE];  // Open files
-// //   struct inode *cwd;           // Current directory
-// //   char name[16];               // Process name (debugging)
-// };
-
-// static struct proc *proc1;
-// static struct proc *proc2;
 static int incr = 0;
 
-static uint32_t   ustack1 = 0x600000;
-static uint32_t   ustack2 = 0x700000; //0x 100000 = 16^5 = 1M
+//section userdata  a partir de 0xc00000
+static uint32_t   ustack1 = 0xc00000;
+static uint32_t   ustack2 = 0xc01000; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
 
-// void proc* allocprocs(struct proc * p1, struct proc * p2)
-// {
-//   p1->kstack = (char*) 0x6000000; //obsobs! Fiks adressen. 
-//   p2->kstack = (char*) 0x7000000;
-//   p->tf = (struct trapframe*)(p->kstack + KSTACKSIZE) - 1;
-
-//   // Set up new context to start executing at forkret (see below).
-//   p->context = (struct context *)p->tf - 1;
-//   memset(p->context, 0, sizeof(*p->context));
-//   p->context->eip = (uint)forkret;
-//   return p;
-// }
-
-void user1()
+void __attribute__ ((section(".user"),aligned(PAGE_SIZE))) user1()
 {
    debug("user1\n");
    while(1);
 }
 
-void user2()
+void __attribute__ ((section(".user"),aligned(PAGE_SIZE))) user2()
 {
    debug("user2\n");
-//    asm("int $32");
+//    asm volatile("cli"); // this privileged instruction causes a GPF, as we are in usermode
    while(1);
 }
 
@@ -153,23 +124,8 @@ void init_user()
    int_desc_t *dsc;
    idt_reg_t  idtr;
 
-   // Je dois attribuer Á chaque tache une pile utilisateur ET une pile noyau.
-   // Il faut donc peut-^etre 2 TSS ???
-    
-
-//MON PROBLEME : je ne sais pas comment configurer les zones d adresses 
-//le noyau est identity mappé
-//    . les tâches sont identity mappées
-//    . les tâches possèdent leurs propres PGD/PTB
-//    . les tâches ont une zone de mémoire partagée:
-//      . de la taille d'une page (4KB)
-//      . à l'adresse physique de votre choix
-//      . à des adresses virtuelles différentes
-//    . les tâches doivent avoir leur propre pile noyau (4KB)
-//    . les tâches doivent avoir leur propre pile utilisateur (4KB)
-
    get_idtr(idtr);
-   dsc = &idtr.desc[48];
+   dsc = &idtr.desc[0x80];
    dsc->dpl = 3;
 
    // 3: install kernel syscall handler
@@ -212,20 +168,6 @@ void int32_handler()
     // SI dans cs juste avant on dètecte qu on etait dans ring 0, on met ss et esp.
     // SINON on met juste eflags, cs et eip. 
     //=========================================
-    // 1: enter user
-//    asm volatile (
-//       "push %0 \n" // ss
-//       "push %1 \n" // esp
-//       "pushf   \n" // eflags
-//       "push %2 \n" // cs
-//       "push %3 \n" // eip
-//       "iret"
-//       ::
-//        "i"(d3_sel),
-//        "m"(ustack),
-//        "i"(c3_sel),
-//        "r"(&userland)
-//       );
 
     if (incr == 1){
         //display number
@@ -291,41 +233,112 @@ void init_IDT()
 
 }
 
+void show_cr3()
+{
+   cr3_reg_t cr3 = {.raw = get_cr3()};
+   debug("CR3 = %p\n", cr3.raw);
+}
 
-// void
-// userinit(void)
-// {
-//   struct proc *p;
-//   extern uchar _binary_initcode_start[], _binary_initcode_size[];
-  
-//   p = allocproc();
-//   initproc = p;
+// 3
+void enable_paging()
+{
+   uint32_t cr0 = get_cr0();
+   set_cr0(cr0|CR0_PG);
+}
 
-//   // Initialize memory from initcode.S
-//   p->sz = PAGE;
-//   p->mem = kalloc(p->sz);
-//   memmove(p->mem, _binary_initcode_start, (int)_binary_initcode_size);
+void identity_init()
+{
+   int      i;
+   pde32_t *pgd = (pde32_t*)0x600000;
+   pte32_t *ptb1 = (pte32_t*)0x601000;
+   pte32_t *ptb2 = (pte32_t*)0x602000;
+   pte32_t *ptb3 = (pte32_t*)0x603000;
+   pte32_t *ptb4 = (pte32_t*)0x604000;
 
-//   memset(p->tf, 0, sizeof(*p->tf));
-//   p->tf->cs = (SEG_UCODE << 3) | DPL_USER;
-//   p->tf->ds = (SEG_UDATA << 3) | DPL_USER;
-//   p->tf->es = p->tf->ds;
-//   p->tf->ss = p->tf->ds;
-//   p->tf->eflags = FL_IF;
-//   p->tf->esp = p->sz;
-//   p->tf->eip = 0;  // beginning of initcode.S
+   // 4
+   for(i=0;i<1024;i++)
+      pg_set_entry(&ptb1[i], PG_KRN|PG_RW, i);
 
-//   safestrcpy(p->name, "initcode", sizeof(p->name));
-//   p->cwd = namei("/");
+   memset((void*)pgd, 0, PAGE_SIZE);
+   pg_set_entry(&pgd[0], PG_KRN|PG_RW, page_nr(ptb1));
 
-//   p->state = RUNNABLE;
-// }
+   // 6: il faut mapper les PTBs également
+   
+   for(i=0;i<1024;i++)
+      pg_set_entry(&ptb2[i], PG_KRN|PG_RW, i+1024);
+
+   pg_set_entry(&pgd[1], PG_KRN|PG_RW, page_nr(ptb2));
+
+//  mapper les fonctions user1 et user2
+// TODO: mettre la page en user et read only (comme c est du code)
+
+// questions: droit des PTB/PGD
+// comment acceder depuis userland. 
+// mettre chaque fct user1/2 dans des PTB diff
+//configurer la zone de mèm partagèe
+   for(i=0;i<1024;i++)
+      pg_set_entry(&ptb3[i], PG_USR|PG_RO, i+2*1024);
+
+   pg_set_entry(&pgd[2], PG_KRN|PG_RW, page_nr(ptb3));
+
+
+// mapper les piles utilisateurs 
+    for(i=0;i<1024;i++)
+      pg_set_entry(&ptb4[i], PG_USR|PG_RW, i+3*1024);
+
+   pg_set_entry(&pgd[3], PG_KRN|PG_RW, page_nr(ptb4));
+
+   // 3
+   set_cr3((uint32_t)pgd);
+   enable_paging();
+
+   // 5: #PF car l'adresse virtuelle 0x700000 n'est pas mappée
+   debug("kernel: á partir de PTB[0] = %p\n", ptb1[1].raw);
+   debug("PGD/PTB: a partir dePTB2[0] = %p\n", ptb2[1].raw);
+   debug("user1 et user2 PTB3[0] = %p\n", ptb3[1].raw);
+   debug("PTB4[0] = %p\n", ptb4[1].raw);
+   debug("Adresse user1 = %p\n", &user1);
+
+   // 7
+//    pte32_t  *ptb3    = (pte32_t*)0x603000;
+//    uint32_t *target  = (uint32_t*)0xc0000000;
+//    int      pgd_idx = pd32_idx(target);
+//    int      ptb_idx = pt32_idx(target);
+
+//    memset((void*)ptb3, 0, PAGE_SIZE);
+//    pg_set_entry(&ptb3[ptb_idx], PG_KRN|PG_RW, page_nr(pgd));
+//    pg_set_entry(&pgd[pgd_idx], PG_KRN|PG_RW, page_nr(ptb3));
+
+//    debug("PGD[0] = %p | target = %p\n", pgd[0].raw, *target);
+
+//    // 8: mémoire partagée
+//    char *v1 = (char*)0x700000;
+//    char *v2 = (char*)0x7ff000;
+
+//    ptb_idx = pt32_idx(v1);
+//    pg_set_entry(&ptb2[ptb_idx], PG_KRN|PG_RW, 2);
+
+//    ptb_idx = pt32_idx(v2);
+//    pg_set_entry(&ptb2[ptb_idx], PG_KRN|PG_RW, 2);
+
+//    debug("%p = %s | %p = %s\n", v1, v1, v2, v2);
+
+   // 9 : il faut également vider les TLBs
+//    *target = 0;
+   //invalidate(target);
+}
+
+
 
 void tp()
 {
    init_user();
    init_IDT();
+   debug("ustack1: %p", ustack1);
+   debug("ustack2: %p", ustack2);
    //enable interrupts
-   asm volatile("sti"); 
+   identity_init();
+//    asm volatile("sti"); 
+   int32_trigger();
    while(1);
 }
