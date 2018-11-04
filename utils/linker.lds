@@ -23,8 +23,21 @@ SECTIONS
    .text     : { *(.text)                        } : phsetup
    .rodata   : { *(.rodata)                      } : phsetup
    .data     : { *(.data)                        } : phsetup
+   .lols     : { *(.lols)                        } : phsetup
    .bss      : { *(.bss COMMON)                  } : phsetup
    /DISCARD/ : { *(.note* .indent .comment)      } : phsetup
 
    __kernel_end__ = .;
+
+   .user 0x802000 :
+   {
+       *(.user)
+   }
+   .userdata 0x900000 :
+   {
+       *(.userdata)
+   }
+
+
+
 }
