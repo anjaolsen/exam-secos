@@ -59,18 +59,42 @@ tss_t      TSS;
 static int incr = 0;
 
 //section userdata  a partir de 0xc00000
-static uint32_t   ustack1 = 0xc00000;
-static uint32_t   ustack2 = 0xc01000; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
+static uint32_t   ustack1 = 0x1001000;
+static uint32_t   ustack2 = 0x1002000; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
 
-void __attribute__ ((section(".user"),aligned(PAGE_SIZE))) user1()
+void sys_counter(uint32_t *counter)
+{
+//    debug("sys_counter\n");
+   debug("Counter: %d\n", *counter);
+    asm volatile (
+      "leave ; pusha        \n"
+      "mov %esp, %eax      \n"
+      "call sys_counter_kernel \n"
+      "popa ; iret"
+      );
+}
+
+void __regparm__(1) sys_counter_kernel(int_ctx_t *ctx)
+{
+  //utiliser qqch de ctx???
+   debug("print syscall: %s", ctx->gpr.esi);
+}
+
+// uint32_t *v1 = (char*)0x802000; //virtual address for user1 to the shared memory
+void __attribute__ ((section(".user1"),aligned(PAGE_SIZE))) user1()
 {
    debug("user1\n");
+   uint32_t *v1 = (uint32_t*)0x802000;
+   *v1 += 1;
    while(1);
 }
 
-void __attribute__ ((section(".user"),aligned(PAGE_SIZE))) user2()
+// uint32_t *v2 = (char*)0xc02000; //virtual address for user2 to the shared memory
+void __attribute__ ((section(".user2"),aligned(PAGE_SIZE))) user2()
 {
    debug("user2\n");
+   uint32_t *v2 = (uint32_t*)0xc02000;
+   sys_counter(v2);
 //    asm volatile("cli"); // this privileged instruction causes a GPF, as we are in usermode
    while(1);
 }
@@ -249,11 +273,11 @@ void enable_paging()
 void identity_init()
 {
    int      i;
-   pde32_t *pgd = (pde32_t*)0x600000;
-   pte32_t *ptb1 = (pte32_t*)0x601000;
-   pte32_t *ptb2 = (pte32_t*)0x602000;
-   pte32_t *ptb3 = (pte32_t*)0x603000;
-   pte32_t *ptb4 = (pte32_t*)0x604000;
+   pde32_t *pgd = (pde32_t*)0x600000; //PGD
+   pte32_t *ptb1 = (pte32_t*)0x601000; //0
+   pte32_t *ptb2 = (pte32_t*)0x602000; //0x400000
+   pte32_t *ptb3 = (pte32_t*)0x603000; //0x800000
+   pte32_t *ptb4 = (pte32_t*)0x604000; //0xc00000
 
    // 4
    for(i=0;i<1024;i++)
@@ -272,60 +296,51 @@ void identity_init()
 //  mapper les fonctions user1 et user2
 // TODO: mettre la page en user et read only (comme c est du code)
 
+//============================================
 // questions: droit des PTB/PGD
-// comment acceder depuis userland. 
-// mettre chaque fct user1/2 dans des PTB diff
-//configurer la zone de mèm partagèe
+// comment acceder depuis userland ???
+//============================================
+
+// mettre chaque fct user1/2 dans des PTB diff - OK cest fait
+
+// map the user1-memory section (from 0x800000)
    for(i=0;i<1024;i++)
       pg_set_entry(&ptb3[i], PG_USR|PG_RO, i+2*1024);
 
    pg_set_entry(&pgd[2], PG_KRN|PG_RW, page_nr(ptb3));
 
-
-// mapper les piles utilisateurs 
+// map the user2-memory section (from 0xc00000)
     for(i=0;i<1024;i++)
-      pg_set_entry(&ptb4[i], PG_USR|PG_RW, i+3*1024);
+      pg_set_entry(&ptb4[i], PG_USR|PG_RO, i+3*1024);
 
    pg_set_entry(&pgd[3], PG_KRN|PG_RW, page_nr(ptb4));
 
-   // 3
+// the page table entry at 1400000 is the user data section
+
+// set the physical address 0x1801000 to be the shared page (chosen arbitrarily)
+
+   uint32_t *v1 = (uint32_t*)0x802000; //virtual address for user1 to the shared memory
+   uint32_t *v2 = (uint32_t*)0xc02000; //virtual address for user2 to the shared memory
+
+   int ptb_idx = pt32_idx(v1);
+   pg_set_entry(&ptb3[ptb_idx], PG_USR|PG_RW, 0x1801); //read write for user1
+
+   ptb_idx = pt32_idx(v2);
+   pg_set_entry(&ptb4[ptb_idx], PG_USR|PG_RO, 0x1801); //read only for user2
+
+
+
+// load the address of the PGD to CR3 and activate paging 
    set_cr3((uint32_t)pgd);
    enable_paging();
 
    // 5: #PF car l'adresse virtuelle 0x700000 n'est pas mappée
-   debug("kernel: á partir de PTB[0] = %p\n", ptb1[1].raw);
-   debug("PGD/PTB: a partir dePTB2[0] = %p\n", ptb2[1].raw);
-   debug("user1 et user2 PTB3[0] = %p\n", ptb3[1].raw);
-   debug("PTB4[0] = %p\n", ptb4[1].raw);
+   debug("kernel: á partir de PTB[0] = %p\n", ptb1[0].raw);
+   debug("PGD/PTB: a partir dePTB2[0] = %p\n", ptb2[0].raw);
+   debug("memory section user1 PTB3[0] = %p\n", ptb3[0].raw);
+   debug("memory section user2 PTB4[1] = %p\n", ptb4[0].raw);
    debug("Adresse user1 = %p\n", &user1);
 
-   // 7
-//    pte32_t  *ptb3    = (pte32_t*)0x603000;
-//    uint32_t *target  = (uint32_t*)0xc0000000;
-//    int      pgd_idx = pd32_idx(target);
-//    int      ptb_idx = pt32_idx(target);
-
-//    memset((void*)ptb3, 0, PAGE_SIZE);
-//    pg_set_entry(&ptb3[ptb_idx], PG_KRN|PG_RW, page_nr(pgd));
-//    pg_set_entry(&pgd[pgd_idx], PG_KRN|PG_RW, page_nr(ptb3));
-
-//    debug("PGD[0] = %p | target = %p\n", pgd[0].raw, *target);
-
-//    // 8: mémoire partagée
-//    char *v1 = (char*)0x700000;
-//    char *v2 = (char*)0x7ff000;
-
-//    ptb_idx = pt32_idx(v1);
-//    pg_set_entry(&ptb2[ptb_idx], PG_KRN|PG_RW, 2);
-
-//    ptb_idx = pt32_idx(v2);
-//    pg_set_entry(&ptb2[ptb_idx], PG_KRN|PG_RW, 2);
-
-//    debug("%p = %s | %p = %s\n", v1, v1, v2, v2);
-
-   // 9 : il faut également vider les TLBs
-//    *target = 0;
-   //invalidate(target);
 }
 
 
@@ -334,8 +349,6 @@ void tp()
 {
    init_user();
    init_IDT();
-   debug("ustack1: %p", ustack1);
-   debug("ustack2: %p", ustack2);
    //enable interrupts
    identity_init();
 //    asm volatile("sti"); 
