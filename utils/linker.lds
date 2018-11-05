@@ -29,13 +29,13 @@ SECTIONS
 
    __kernel_end__ = .;
 
-   .user 0x802000 :
+   .user1 0x801000 :
    {
-       *(.user)
+       *(.user1)
    }
-   .userdata 0x900000 :
+   .user2 0xc01000 :
    {
-       *(.userdata)
+       *(.user2)
    }
 
 
