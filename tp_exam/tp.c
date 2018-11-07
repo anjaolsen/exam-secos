@@ -58,10 +58,11 @@ tss_t      TSS;
 
 static int incr = 0;
 
-//section userdata  a partir de 0xc00000
+//userstacks a partir de 0x1000000
 static uint32_t   ustack1 = 0x1001000;
 static uint32_t   ustack2 = 0x1002000; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
 
+//note: this is not finished... I don t know quite how to implement this yet. 
 void sys_counter(uint32_t *counter)
 {
 //    debug("sys_counter\n");
@@ -74,22 +75,24 @@ void sys_counter(uint32_t *counter)
       );
 }
 
+//note: this is not finished... I don t know quite how to implement this yet. 
 void __regparm__(1) sys_counter_kernel(int_ctx_t *ctx)
 {
   //utiliser qqch de ctx???
    debug("print syscall: %s", ctx->gpr.esi);
 }
 
-// uint32_t *v1 = (char*)0x802000; //virtual address for user1 to the shared memory
+// note: 0x802000 = virtual address for user1 to the shared memory
 void __attribute__ ((section(".user1"),aligned(PAGE_SIZE))) user1()
 {
+   incr = 
    debug("user1\n");
    uint32_t *v1 = (uint32_t*)0x802000;
    *v1 += 1;
    while(1);
 }
 
-// uint32_t *v2 = (char*)0xc02000; //virtual address for user2 to the shared memory
+// note: 0xc02000 = virtual address for user2 to the shared memory
 void __attribute__ ((section(".user2"),aligned(PAGE_SIZE))) user2()
 {
    debug("user2\n");
@@ -99,25 +102,6 @@ void __attribute__ ((section(".user2"),aligned(PAGE_SIZE))) user2()
    while(1);
 }
 
-void __regparm__(1) syscall_handler(int_ctx_t *ctx)
-{
-//    3
-   debug("SYSCALL eax = %p\n", ctx->gpr.eax);
-
-//    4
-   debug("print syscall: %s", ctx->gpr.esi);
-}
-
-void syscall_isr()
-{
-   // 3: stack ninjutsu to access int_ctx_t*
-   asm volatile (
-      "leave ; pusha        \n"
-      "mov %esp, %eax       \n"
-      "call syscall_handler \n"
-      "popa ; iret"
-      );
-}
 
 void init_user()
 {
@@ -144,7 +128,7 @@ void init_user()
    tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
    set_tr(ts_sel);
 
-//    // 2: fix IDT for syscall 48
+    // change ISR for syscall 0x80
    int_desc_t *dsc;
    idt_reg_t  idtr;
 
@@ -153,8 +137,8 @@ void init_user()
    dsc->dpl = 3;
 
    // 3: install kernel syscall handler
-   dsc->offset_1 = (uint16_t)((uint32_t)syscall_isr);
-   dsc->offset_2 = (uint16_t)(((uint32_t)syscall_isr)>>16);
+   dsc->offset_1 = (uint16_t)((uint32_t)sys_counter);
+   dsc->offset_2 = (uint16_t)(((uint32_t)sys_counter)>>16);
 
 
 }
@@ -177,26 +161,25 @@ void int32_handler()
     asm volatile ("pusha");
     debug("\n\n\n\n");
     debug("Int32 handler\n");
-    // int var=1;
-    // asm volatile ("mov (%esp), %0\n\t"
-    // : "=r" (var));
-    // asm volatile ("movl $0, %eax");
-    asm volatile ("mov 48(%eax), %esp");
+
+    //========== 
+    // ce bout de code est ce que j`ai fait pour l`instant pour savoir si on a interrompu
+    // le kernel ou le user. Mon idee est de regarder la valeur du esp ou cs qui ont ete empiles
+    //
+    // asm volatile ("mov 48(%eax), %esp"); //ne marche pas.... 
     // debug("Var: %x", var);
 
-    //idea to find out what privilege level we came from: pop/read cs (here: esp+12*4)
+    // idea to find out what privilege level we came from: pop/read cs (here: esp+12*4) 
+    // 
     // and see what privilege level it was...
+    // le nombre 12 a ete trouve avec gdb : esp a avance de 12 apres avoir epmile cs.
 
-     //===============================
-    //aller vers une tache
-    // SI dans cs juste avant on dètecte qu on etait dans ring 0, on met ss et esp.
-    // SINON on met juste eflags, cs et eip. 
     //=========================================
 
-    if (incr == 1){
+    if (incr == 0){
         //display number
         debug("Display\n");
-        incr = 0;
+        incr = 1;
         asm volatile (
             "push %0 \n" // ss
             "push %1 \n" // esp
@@ -213,7 +196,7 @@ void int32_handler()
     } else {
         //increment number
         debug("Increment\n");
-        incr = 1;
+        incr = 0;
         asm volatile (
             "push %0 \n" // ss
             "push %1 \n" // esp
@@ -274,10 +257,11 @@ void identity_init()
 {
    int      i;
    pde32_t *pgd = (pde32_t*)0x600000; //PGD
-   pte32_t *ptb1 = (pte32_t*)0x601000; //0
-   pte32_t *ptb2 = (pte32_t*)0x602000; //0x400000
-   pte32_t *ptb3 = (pte32_t*)0x603000; //0x800000
-   pte32_t *ptb4 = (pte32_t*)0x604000; //0xc00000
+   pte32_t *ptb1 = (pte32_t*)0x601000;  //0
+   pte32_t *ptb2 = (pte32_t*)0x602000;  //0x400000
+   pte32_t *ptb3 = (pte32_t*)0x603000;  //0x800000
+   pte32_t *ptb4 = (pte32_t*)0x604000;  //0xc00000
+   pte32_t *ptb5 = (pte32_t*)0x605000; //0x1000000
 
    // 4
    for(i=0;i<1024;i++)
@@ -315,7 +299,11 @@ void identity_init()
 
    pg_set_entry(&pgd[3], PG_KRN|PG_RW, page_nr(ptb4));
 
-// the page table entry at 1400000 is the user data section
+// user data (user stacks)
+   for(i=0;i<1024;i++)
+      pg_set_entry(&ptb5[i], PG_USR|PG_RO, i+4*1024);
+
+   pg_set_entry(&pgd[4], PG_KRN|PG_RW, page_nr(ptb5));
 
 // set the physical address 0x1801000 to be the shared page (chosen arbitrarily)
 
@@ -351,7 +339,7 @@ void tp()
    init_IDT();
    //enable interrupts
    identity_init();
-//    asm volatile("sti"); 
-   int32_trigger();
+   asm volatile("sti"); 
+//    int32_trigger();
    while(1);
 }
