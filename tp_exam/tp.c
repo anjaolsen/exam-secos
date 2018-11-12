@@ -1,8 +1,6 @@
 /* GPLv2 (c) Airbus */
 
 
-//singpolyma.net 
-
 #include <debug.h>
 #include <segmem.h>
 #include <intr.h>
@@ -85,7 +83,6 @@ void __regparm__(1) sys_counter_kernel(int_ctx_t *ctx)
 // note: 0x802000 = virtual address for user1 to the shared memory
 void __attribute__ ((section(".user1"),aligned(PAGE_SIZE))) user1()
 {
-   incr = 
    debug("user1\n");
    uint32_t *v1 = (uint32_t*)0x802000;
    *v1 += 1;
@@ -180,6 +177,7 @@ void int32_handler()
         //display number
         debug("Display\n");
         incr = 1;
+        // set_cr3((uint32_t)0x610000);
         asm volatile (
             "push %0 \n" // ss
             "push %1 \n" // esp
@@ -263,12 +261,22 @@ void identity_init()
    pte32_t *ptb4 = (pte32_t*)0x604000;  //0xc00000
    pte32_t *ptb5 = (pte32_t*)0x605000; //0x1000000
 
+///====================paging user1=======================
+//    pde32_t *pdg_user1 = (pde32_t*)0x610000; //PGD de user1
+//    pte32_t *ptb_user1 = (pte32_t*)0x611000; //pour mapper kernel (mettre dans pdg_user1[2])
+//    pte32_t *ptb2_user1 = (pte32_t*)0x612000;
+
+//    pde32_t *pdg_user2 = (pde32_t*)0x613000; //PGD de user1
+//    pte32_t *ptb_user2 = (pte32_t*)0x614000; //pour mapper user1 (mettre dans pdg_user1[2])
+
+
+//===========paging normal============
    // 4
    for(i=0;i<1024;i++)
-      pg_set_entry(&ptb1[i], PG_KRN|PG_RW, i);
+      pg_set_entry(&ptb1[i], PG_USR|PG_RW, i);
 
    memset((void*)pgd, 0, PAGE_SIZE);
-   pg_set_entry(&pgd[0], PG_KRN|PG_RW, page_nr(ptb1));
+   pg_set_entry(&pgd[0], PG_USR|PG_RW, page_nr(ptb1));
 
    // 6: il faut mapper les PTBs également
    
@@ -285,25 +293,24 @@ void identity_init()
 // comment acceder depuis userland ???
 //============================================
 
-// mettre chaque fct user1/2 dans des PTB diff - OK cest fait
-
 // map the user1-memory section (from 0x800000)
    for(i=0;i<1024;i++)
       pg_set_entry(&ptb3[i], PG_USR|PG_RO, i+2*1024);
 
-   pg_set_entry(&pgd[2], PG_KRN|PG_RW, page_nr(ptb3));
+   pg_set_entry(&pgd[2], PG_USR|PG_RW, page_nr(ptb3));
+
 
 // map the user2-memory section (from 0xc00000)
     for(i=0;i<1024;i++)
       pg_set_entry(&ptb4[i], PG_USR|PG_RO, i+3*1024);
 
-   pg_set_entry(&pgd[3], PG_KRN|PG_RW, page_nr(ptb4));
+   pg_set_entry(&pgd[3], PG_USR|PG_RW, page_nr(ptb4));
 
-// user data (user stacks)
+// user data (user stacks) (from 0x1000000)
    for(i=0;i<1024;i++)
-      pg_set_entry(&ptb5[i], PG_USR|PG_RO, i+4*1024);
+      pg_set_entry(&ptb5[i], PG_USR|PG_RW, i+4*1024);
 
-   pg_set_entry(&pgd[4], PG_KRN|PG_RW, page_nr(ptb5));
+   pg_set_entry(&pgd[4], PG_USR|PG_RW, page_nr(ptb5));
 
 // set the physical address 0x1801000 to be the shared page (chosen arbitrarily)
 
