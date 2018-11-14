@@ -5,6 +5,7 @@
 
 extern info_t *info;
 extern void idt_trampoline();
+extern void int32_handler(int_ctx_t* ctx);
 static int_desc_t IDT[IDT_NR_DESC];
 
 void intr_init()
@@ -55,7 +56,11 @@ void __regparm__(1) intr_hdlr(int_ctx_t *ctx)
          ,ctx->gpr.edi.raw);
 
    uint8_t vector = ctx->nr.blow;
-
+   debug("Test: %d\n", vector);
+   if (vector == TASK_SWITCH_EXCP){
+      debug("ouiiii\n");
+      int32_handler(ctx);
+   }
    if(vector < NR_EXCP)
       excp_hdlr(ctx);
    else

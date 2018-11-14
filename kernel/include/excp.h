@@ -8,6 +8,8 @@
 ** Total number of exceptions
 */
 #define NR_EXCP    32
+#define TASK_SWITCH_EXCP 32
+
 
 /*
 ** Exceptions without error code

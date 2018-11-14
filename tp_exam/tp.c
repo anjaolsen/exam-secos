@@ -1,6 +1,9 @@
 /* GPLv2 (c) Airbus */
 
-
+// Ting som fortsatt må gjøres
+// - lage flere PGD
+// - sette ting i RO i pgd (alt er RW nå)
+// - fikse sånn at handleren min blir kalt
 #include <debug.h>
 #include <segmem.h>
 #include <intr.h>
@@ -56,9 +59,11 @@ tss_t      TSS;
 
 static int incr = 0;
 
-//userstacks a partir de 0x1000000
+//userstacks a partir de 0x1000000 - 1 page de 4ko chacune
 static uint32_t   ustack1 = 0x1001000;
 static uint32_t   ustack2 = 0x1002000; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
+// static uint32_t   user_kstack1 = 0x1003000;
+// static uint32_t   user_kstack2 = 0x1004000;
 
 //note: this is not finished... I don t know quite how to implement this yet. 
 void sys_counter(uint32_t *counter)
@@ -136,7 +141,13 @@ void init_user()
    // 3: install kernel syscall handler
    dsc->offset_1 = (uint16_t)((uint32_t)sys_counter);
    dsc->offset_2 = (uint16_t)(((uint32_t)sys_counter)>>16);
-
+ 
+// mettre les choses pertinentes dans les piles noyaux, comme si ils avaient deja ete
+// interrompues par une interruption par exemple. 
+// flags
+// cs
+// eip <---esp
+//    user_kstack1
 
 }
 
@@ -153,11 +164,17 @@ void init_user()
 //       "push %2 \n" // cs
 //       "push %3 \n" // eip
 // and put only the three last if it changes from user to user
-void int32_handler() 
+void int32_handler(int_ctx_t* ctx) 
 {
     asm volatile ("pusha");
     debug("\n\n\n\n");
     debug("Int32 handler\n");
+    debug("esp: %lx\n", ctx->gpr.esp);
+    if (ctx->gpr.esp.raw < 0x1001000){
+        debug("La tache interrompue est une tache noyau\n");
+    } else {
+        debug("La tache interrompue est une tache utilisateur\n");
+    }
 
     //========== 
     // ce bout de code est ce que j`ai fait pour l`instant pour savoir si on a interrompu
@@ -228,13 +245,13 @@ void int32_trigger()  //for test purposes
 
 void init_IDT()
 {
-    idt_reg_t idt_r; 
-    get_idtr(idt_r);   
+    // idt_reg_t idt_r; 
+    // get_idtr(idt_r);   
 
-    int_desc_t *bp_dsc = &idt_r.desc[32];
+    // int_desc_t *bp_dsc = &idt_r.desc[32];
 
-    bp_dsc->offset_1 = (uint16_t)((uint32_t)int32_handler);
-    bp_dsc->offset_2 = (uint16_t)(((uint32_t)int32_handler)>>16);
+    // bp_dsc->offset_1 = (uint16_t)((uint32_t)int32_handler);
+    // bp_dsc->offset_2 = (uint16_t)(((uint32_t)int32_handler)>>16);
 
 }
 
