@@ -60,12 +60,22 @@ tss_t      TSS;
 static int incr = 0;
 
 //userstacks a partir de 0x1000000 - 1 page de 4ko chacune
-static uint32_t   ustack1 = 0x1001000;
-static uint32_t   ustack2 = 0x1002000; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
-// static uint32_t   user_kstack1 = 0x1003000;
-// static uint32_t   user_kstack2 = 0x1004000;
+static uint32_t   ustack1 = 0x1001000 - 0x04;
+static uint32_t   ustack2 = 0x1002000 - 0x04; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
+static uint32_t   user_kstack1 = 0x1003000;
+static uint32_t   user_kstack2 = 0x1004000;
 
 //note: this is not finished... I don t know quite how to implement this yet. 
+void int32_trigger()  //for test purposes
+{
+    debug("int32 trigger\n");
+    asm("int $32"); 
+    //int3();
+    debug("\n\n\n\n");
+    debug("int32 trigger retour\n");
+}
+
+
 void sys_counter(uint32_t *counter)
 {
 //    debug("sys_counter\n");
@@ -88,9 +98,14 @@ void __regparm__(1) sys_counter_kernel(int_ctx_t *ctx)
 // note: 0x802000 = virtual address for user1 to the shared memory
 void __attribute__ ((section(".user1"),aligned(PAGE_SIZE))) user1()
 {
-   debug("user1\n");
-   uint32_t *v1 = (uint32_t*)0x802000;
-   *v1 += 1;
+
+    asm volatile (
+      "pusha\n"
+      "popa;"
+      );
+//    debug("user1\n");
+//    uint32_t *v1 = (uint32_t*)0x802000;
+
    while(1);
 }
 
@@ -98,9 +113,7 @@ void __attribute__ ((section(".user1"),aligned(PAGE_SIZE))) user1()
 void __attribute__ ((section(".user2"),aligned(PAGE_SIZE))) user2()
 {
    debug("user2\n");
-   uint32_t *v2 = (uint32_t*)0xc02000;
-   sys_counter(v2);
-//    asm volatile("cli"); // this privileged instruction causes a GPF, as we are in usermode
+//    uint32_t *v2 = (uint32_t*)0xc02000;
    while(1);
 }
 
@@ -144,11 +157,45 @@ void init_user()
  
 // mettre les choses pertinentes dans les piles noyaux, comme si ils avaient deja ete
 // interrompues par une interruption par exemple. 
-// flags
-// cs
-// eip <---esp
+// flags (ex 0x2)
+// cs (ex 0x8:0x30456b) 
+// eip (0x8:0x30456b) <---esp
 //    user_kstack1
+    uint32_t * ptr = (uint32_t*)user_kstack1;
+    *ptr = (uint32_t) (&user1);
+    ptr++;
+    *ptr = c3_sel;
+    ptr++;
+    *ptr = 0x02;
+    ptr++;
+    *ptr = ustack1;
+    ptr++;
+    *ptr = d3_sel;
 
+    ptr = (uint32_t*)user_kstack2;
+    *ptr = (uint32_t) (&user2);
+    ptr++;
+    *ptr = c3_sel;
+    ptr++;
+    *ptr = 0x02;
+    ptr++;
+    *ptr = ustack2;
+    ptr++;
+    *ptr = d3_sel;
+ 
+    // int_ctx_t* ctx_init = (int_ctx_t*) user_kstack1;
+    // ctx_init->ss.raw = d3_sel;
+    // ctx_init->esp.raw = ustack1;
+    // ctx_init->eflags.raw = 0x02;
+    // ctx_init->cs.raw = c3_sel;
+    // ctx_init->eip.raw =   (uint32_t) (&user1);
+    
+    // ctx_init = (int_ctx_t*) user_kstack2;
+    // ctx_init->ss.raw = d3_sel;
+    // ctx_init->esp.raw = ustack2;
+    // ctx_init->eflags.raw = 0x02;
+    // ctx_init->cs.raw = c3_sel;
+    // ctx_init->eip.raw =   (uint32_t) (&user2);
 }
 
 //=============================================================================
@@ -176,69 +223,47 @@ void int32_handler(int_ctx_t* ctx)
         debug("La tache interrompue est une tache utilisateur\n");
     }
 
-    //========== 
-    // ce bout de code est ce que j`ai fait pour l`instant pour savoir si on a interrompu
-    // le kernel ou le user. Mon idee est de regarder la valeur du esp ou cs qui ont ete empiles
-    //
-    // asm volatile ("mov 48(%eax), %esp"); //ne marche pas.... 
-    // debug("Var: %x", var);
-
-    // idea to find out what privilege level we came from: pop/read cs (here: esp+12*4) 
-    // 
-    // and see what privilege level it was...
-    // le nombre 12 a ete trouve avec gdb : esp a avance de 12 apres avoir epmile cs.
-
-    //=========================================
-
     if (incr == 0){
         //display number
         debug("Display\n");
         incr = 1;
-        // set_cr3((uint32_t)0x610000);
+        set_cr3((uint32_t)0x610000);
+        debug("Changes CR3: its value is now %lx\n", get_cr3());
+        TSS.s0.esp = user_kstack1;
+        TSS.s0.ss  = d0_sel;
+        tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
+        set_tr(ts_sel);
         asm volatile (
-            "push %0 \n" // ss
-            "push %1 \n" // esp
-            "pushf   \n" // eflags
-            "push %2 \n" // cs
-            "push %3 \n" // eip
+            "mov %0, %%esp \n" //mettre user_kstack1 dans esp
             "iret"
             ::
-            "i"(d3_sel),
-            "m"(ustack1),
-            "i"(c3_sel),
-            "r"(&user1)
+            "r"(user_kstack1)
         );
+
     } else {
         //increment number
         debug("Increment\n");
         incr = 0;
+        set_cr3((uint32_t)0x620000);
+        uint32_t lol = get_cr3();
+        debug("Changes CR3: its value is now %lx\n", lol);
+        TSS.s0.esp = user_kstack2;
+        TSS.s0.ss  = d0_sel;
+        tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
+        set_tr(ts_sel);
         asm volatile (
-            "push %0 \n" // ss
-            "push %1 \n" // esp
-            "pushf   \n" // eflags
-            "push %2 \n" // cs
-            "push %3 \n" // eip
+            "mov %0, %%esp \n" //mettre user_kstack1 dans esp
             "iret"
             ::
-            "i"(d3_sel),
-            "m"(ustack2),
-            "i"(c3_sel),
-            "r"(&user2)
+            "r"(user_kstack2)
         );
     }
+        debug("pas de #GP\n");
 
     ///3.5: aligner la pile et avoir le bon esp.
-    asm volatile ("popa; leave ; iret");
+    // asm volatile ("popa; leave ; iret");
 }
 
-void int32_trigger()  //for test purposes
-{
-    debug("int32 trigger\n");
-    asm("int $32"); 
-    //int3();
-    debug("\n\n\n\n");
-    debug("int32 trigger retour\n");
-}
 
 
 //=============================================================================
@@ -276,58 +301,72 @@ void identity_init()
    pte32_t *ptb2 = (pte32_t*)0x602000;  //0x400000
    pte32_t *ptb3 = (pte32_t*)0x603000;  //0x800000
    pte32_t *ptb4 = (pte32_t*)0x604000;  //0xc00000
-   pte32_t *ptb5 = (pte32_t*)0x605000; //0x1000000
+//    pte32_t *ptb5 = (pte32_t*)0x605000; //0x1000000
 
 ///====================paging user1=======================
-//    pde32_t *pdg_user1 = (pde32_t*)0x610000; //PGD de user1
+   pde32_t *pgd_user1 = (pde32_t*)0x610000; //PGD de user1
 //    pte32_t *ptb_user1 = (pte32_t*)0x611000; //pour mapper kernel (mettre dans pdg_user1[2])
 //    pte32_t *ptb2_user1 = (pte32_t*)0x612000;
 
-//    pde32_t *pdg_user2 = (pde32_t*)0x613000; //PGD de user1
-//    pte32_t *ptb_user2 = (pte32_t*)0x614000; //pour mapper user1 (mettre dans pdg_user1[2])
+   pde32_t *pgd_user2 = (pde32_t*)0x613000; //PGD de user2
+//    pte32_t *ptb_user2 = (pte32_t*)0x614000; 
 
 
 //===========paging normal============
-   // 4
+   // 
    for(i=0;i<1024;i++)
-      pg_set_entry(&ptb1[i], PG_USR|PG_RW, i);
+      pg_set_entry(&ptb1[i], PG_KRN|PG_RW, i);
 
    memset((void*)pgd, 0, PAGE_SIZE);
-   pg_set_entry(&pgd[0], PG_USR|PG_RW, page_nr(ptb1));
+   pg_set_entry(&pgd[0], PG_KRN|PG_RW, page_nr(ptb1));
 
-   // 6: il faut mapper les PTBs également
+   memset((void*)pgd_user1, 0, PAGE_SIZE);
+   pg_set_entry(&pgd_user1[0], PG_KRN|PG_RW, page_nr(ptb1));
+
+   memset((void*)pgd_user2, 0, PAGE_SIZE);
+   pg_set_entry(&pgd_user2[0], PG_KRN|PG_RW, page_nr(ptb2));
+
+
+   // les PTBs également
    
    for(i=0;i<1024;i++)
-      pg_set_entry(&ptb2[i], PG_KRN|PG_RW, i+1024);
+      pg_set_entry(&ptb2[i], PG_KRN|PG_RW, i+1024); 
 
    pg_set_entry(&pgd[1], PG_KRN|PG_RW, page_nr(ptb2));
+   pg_set_entry(&pgd_user1[1], PG_KRN|PG_RW, page_nr(ptb2));
+   pg_set_entry(&pgd_user2[1], PG_KRN|PG_RW, page_nr(ptb2));
 
 //  mapper les fonctions user1 et user2
-// TODO: mettre la page en user et read only (comme c est du code)
 
 //============================================
 // questions: droit des PTB/PGD
 // comment acceder depuis userland ???
 //============================================
 
-// map the user1-memory section (from 0x800000)
+// map the user1-memory section (from 0x800000) - mappe uniquement pour user1
    for(i=0;i<1024;i++)
       pg_set_entry(&ptb3[i], PG_USR|PG_RO, i+2*1024);
 
-   pg_set_entry(&pgd[2], PG_USR|PG_RW, page_nr(ptb3));
+   pg_set_entry(&pgd_user1[2], PG_USR|PG_RW, page_nr(ptb3));
 
 
-// map the user2-memory section (from 0xc00000)
+// map the user2-memory section (from 0xc00000) - mappe uniquement pour user2
     for(i=0;i<1024;i++)
       pg_set_entry(&ptb4[i], PG_USR|PG_RO, i+3*1024);
 
-   pg_set_entry(&pgd[3], PG_USR|PG_RW, page_nr(ptb4));
+//    pg_set_entry(&pgd[3], PG_USR|PG_RW, page_nr(ptb4));
+   pg_set_entry(&pgd_user2[3], PG_USR|PG_RW, page_nr(ptb4));
 
-// user data (user stacks) (from 0x1000000)
+
+// @ ustack1 = 0x1001000 - 0x04; !! Avance a l envers, commence donc a la deriniere @ de la page
+// @ ustack2 = 0x1002000 - 0x04;
+//  (user stacks) (from 0x1000000)
+   pte32_t *ptb_ustack1 = (pte32_t*)0x605000;  //0 => 1000000 = 601000
    for(i=0;i<1024;i++)
-      pg_set_entry(&ptb5[i], PG_USR|PG_RW, i+4*1024);
+      pg_set_entry(&ptb_ustack1[i], PG_USR|PG_RW, i+4*1024);
 
-   pg_set_entry(&pgd[4], PG_USR|PG_RW, page_nr(ptb5));
+//    pg_set_entry(&pgd[4], PG_USR|PG_RW, page_nr(ptb5));
+   pg_set_entry(&pgd_user1[4], PG_USR|PG_RW, page_nr(ptb_ustack1));
 
 // set the physical address 0x1801000 to be the shared page (chosen arbitrarily)
 
@@ -363,7 +402,8 @@ void tp()
    init_IDT();
    //enable interrupts
    identity_init();
-   asm volatile("sti"); 
-//    int32_trigger();
+   
+//    asm volatile("sti"); 
+   int32_trigger();
    while(1);
 }
