@@ -1,9 +1,11 @@
 /* GPLv2 (c) Airbus */
 
-// Ting som fortsatt må gjøres
-// - lage flere PGD
-// - sette ting i RO i pgd (alt er RW nå)
-// - fikse sånn at handleren min blir kalt
+// systcall pour lire le zone
+
+// question: je pense que quand je change de PGD ca ne change rien, tant que c est mappe dans un
+// pgd quelque part. J ai par exemple essaye de mapper la pile kernel de user1 dans le pgd de user2
+// et je n ai pas de PF 
+
 #include <debug.h>
 #include <segmem.h>
 #include <intr.h>
@@ -57,20 +59,19 @@ tss_t      TSS;
 #define c3_dsc(_d) gdt_flat_dsc(_d,3,SEG_DESC_CODE_XR)
 #define d3_dsc(_d) gdt_flat_dsc(_d,3,SEG_DESC_DATA_RW)
 
-static int incr = 0;
+static int incr = 1;
 
-//userstacks a partir de 0x1000000 - 1 page de 4ko chacune
+//userstacks a partir de 0x1000000 - 1 page de 4ko chacune (derniere @)
 static uint32_t   ustack1 = 0x1001000 - 0x04;
 static uint32_t   ustack2 = 0x1002000 - 0x04; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
-static uint32_t   user_kstack1 = 0x1003000;
-static uint32_t   user_kstack2 = 0x1004000;
+static uint32_t   user_kstack1 = 0x1004000; 
+static uint32_t   user_kstack2 = 0x1006000; 
 
-//note: this is not finished... I don t know quite how to implement this yet. 
+
 void int32_trigger()  //for test purposes
 {
     debug("int32 trigger\n");
     asm("int $32"); 
-    //int3();
     debug("\n\n\n\n");
     debug("int32 trigger retour\n");
 }
@@ -78,42 +79,52 @@ void int32_trigger()  //for test purposes
 
 void sys_counter(uint32_t *counter)
 {
-//    debug("sys_counter\n");
-   debug("Counter: %d\n", *counter);
-    asm volatile (
+//    debug("Counter: %d\n", *counter);
+   asm volatile (
       "leave ; pusha        \n"
-      "mov %esp, %eax      \n"
-      "call sys_counter_kernel \n"
-      "popa ; iret"
-      );
+      "movl %0, %%eax      \n"
+    //   "call sys_counter_kernel \n"
+      "int  $80 \n"
+      "popa ; iret;"
+      :
+      :"r"(counter)
+      :
+   );
 }
 
 //note: this is not finished... I don t know quite how to implement this yet. 
 void __regparm__(1) sys_counter_kernel(int_ctx_t *ctx)
 {
-  //utiliser qqch de ctx???
-   debug("print syscall: %s", ctx->gpr.esi);
+   debug("print syscall: %d", ctx->gpr.eax);
+
 }
 
 // note: 0x802000 = virtual address for user1 to the shared memory
 void __attribute__ ((section(".user1"),aligned(PAGE_SIZE))) user1()
 {
-
-    asm volatile (
-      "pusha\n"
-      "popa;"
-      );
-//    debug("user1\n");
-//    uint32_t *v1 = (uint32_t*)0x802000;
-
+    //call sys_counter with the virtual address
+    uint32_t *v1 = (uint32_t*)0x802000;
+    *v1 = *v1 + 1;
    while(1);
 }
 
 // note: 0xc02000 = virtual address for user2 to the shared memory
 void __attribute__ ((section(".user2"),aligned(PAGE_SIZE))) user2()
 {
-   debug("user2\n");
+    // asm volatile (
+    //   "pusha\n"
+    //   "int $0x80\n"
+    //   "popa;"
+    //   );
+
+
+
+//    debug("user2\n");
 //    uint32_t *v2 = (uint32_t*)0xc02000;
+    // asm("int $32"); 
+
+//    sys_counter(v2);
+
    while(1);
 }
 
@@ -152,8 +163,8 @@ void init_user()
    dsc->dpl = 3;
 
    // 3: install kernel syscall handler
-   dsc->offset_1 = (uint16_t)((uint32_t)sys_counter);
-   dsc->offset_2 = (uint16_t)(((uint32_t)sys_counter)>>16);
+   dsc->offset_1 = (uint16_t)((uint32_t)sys_counter_kernel);
+   dsc->offset_2 = (uint16_t)(((uint32_t)sys_counter_kernel)>>16);
  
 // mettre les choses pertinentes dans les piles noyaux, comme si ils avaient deja ete
 // interrompues par une interruption par exemple. 
@@ -303,16 +314,16 @@ void identity_init()
    pte32_t *ptb4 = (pte32_t*)0x604000;  //0xc00000
 //    pte32_t *ptb5 = (pte32_t*)0x605000; //0x1000000
 
-///====================paging user1=======================
+///====================paging user1 =======================
    pde32_t *pgd_user1 = (pde32_t*)0x610000; //PGD de user1
-//    pte32_t *ptb_user1 = (pte32_t*)0x611000; //pour mapper kernel (mettre dans pdg_user1[2])
+//    pte32_t *ptb1_user1 = (pte32_t*)0x611000; //pour mapper kernel (mettre dans pdg_user1[2])
 //    pte32_t *ptb2_user1 = (pte32_t*)0x612000;
+///====================paging user2 =======================
+   pde32_t *pgd_user2 = (pde32_t*)0x620000; //PGD de user2
+//    pte32_t *ptb1_user2 = (pte32_t*)0x621000; 
 
-   pde32_t *pgd_user2 = (pde32_t*)0x613000; //PGD de user2
-//    pte32_t *ptb_user2 = (pte32_t*)0x614000; 
 
-
-//===========paging normal============
+//=========== mapper la pgd ============
    // 
    for(i=0;i<1024;i++)
       pg_set_entry(&ptb1[i], PG_KRN|PG_RW, i);
@@ -324,10 +335,10 @@ void identity_init()
    pg_set_entry(&pgd_user1[0], PG_KRN|PG_RW, page_nr(ptb1));
 
    memset((void*)pgd_user2, 0, PAGE_SIZE);
-   pg_set_entry(&pgd_user2[0], PG_KRN|PG_RW, page_nr(ptb2));
+   pg_set_entry(&pgd_user2[0], PG_KRN|PG_RW, page_nr(ptb1));
 
 
-   // les PTBs également
+   //=============== mapper les PTBs============
    
    for(i=0;i<1024;i++)
       pg_set_entry(&ptb2[i], PG_KRN|PG_RW, i+1024); 
@@ -336,12 +347,6 @@ void identity_init()
    pg_set_entry(&pgd_user1[1], PG_KRN|PG_RW, page_nr(ptb2));
    pg_set_entry(&pgd_user2[1], PG_KRN|PG_RW, page_nr(ptb2));
 
-//  mapper les fonctions user1 et user2
-
-//============================================
-// questions: droit des PTB/PGD
-// comment acceder depuis userland ???
-//============================================
 
 // map the user1-memory section (from 0x800000) - mappe uniquement pour user1
    for(i=0;i<1024;i++)
@@ -361,12 +366,29 @@ void identity_init()
 // @ ustack1 = 0x1001000 - 0x04; !! Avance a l envers, commence donc a la deriniere @ de la page
 // @ ustack2 = 0x1002000 - 0x04;
 //  (user stacks) (from 0x1000000)
-   pte32_t *ptb_ustack1 = (pte32_t*)0x605000;  //0 => 1000000 = 601000
-   for(i=0;i<1024;i++)
-      pg_set_entry(&ptb_ustack1[i], PG_USR|PG_RW, i+4*1024);
 
-//    pg_set_entry(&pgd[4], PG_USR|PG_RW, page_nr(ptb5));
+// static uint32_t   ustack1 = 0x1001000 - 0x04;
+// static uint32_t   ustack2 = 0x1002000 - 0x04; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
+// static uint32_t   user_kstack1 = 0x1004000; 
+// static uint32_t   user_kstack2 = 0x1006000;
+
+   pte32_t *ptb_ustack1 = (pte32_t*)0x605000;  //0 => 1000000 = 601000
+   pte32_t *ptb_ustack2 = (pte32_t*)0x605000;
+
+   memset((void*)ptb_ustack1, 0, PAGE_SIZE);
+   memset((void*)ptb_ustack2, 0, PAGE_SIZE);
+//    for(i=0;i<1024;i++)
+//      pg_set_entry(&ptb_ustack1[i], PG_USR|PG_RW, i+4*1024);
+   pg_set_entry(&ptb_ustack1[0], PG_USR|PG_RW, 0+4*1024); //ustack1 from 0 to 0x1001000 -0x04
+   pg_set_entry(&ptb_ustack2[1], PG_USR|PG_RW, 1+4*1024); //ustack2
+
+   pg_set_entry(&ptb_ustack1[3], PG_USR|PG_RW, 3+4*1024); //user kstack1
+   pg_set_entry(&ptb_ustack2[4], PG_USR|PG_RW, 4+4*1024); //user kstack1
+   pg_set_entry(&ptb_ustack2[5], PG_USR|PG_RW, 5+4*1024); //user kstack2
+   pg_set_entry(&ptb_ustack2[6], PG_USR|PG_RW, 6+4*1024); //user kstack2
+
    pg_set_entry(&pgd_user1[4], PG_USR|PG_RW, page_nr(ptb_ustack1));
+   pg_set_entry(&pgd_user2[4], PG_USR|PG_RW, page_nr(ptb_ustack2));
 
 // set the physical address 0x1801000 to be the shared page (chosen arbitrarily)
 
@@ -387,7 +409,7 @@ void identity_init()
 
    // 5: #PF car l'adresse virtuelle 0x700000 n'est pas mappée
    debug("kernel: á partir de PTB[0] = %p\n", ptb1[0].raw);
-   debug("PGD/PTB: a partir dePTB2[0] = %p\n", ptb2[0].raw);
+   debug("PGD/PTB: a partir de PTB2[0] = %p\n", ptb2[0].raw);
    debug("memory section user1 PTB3[0] = %p\n", ptb3[0].raw);
    debug("memory section user2 PTB4[1] = %p\n", ptb4[0].raw);
    debug("Adresse user1 = %p\n", &user1);
@@ -398,12 +420,14 @@ void identity_init()
 
 void tp()
 {
+   uint32_t *v2 = (uint32_t*)0xc02000;
+   *v2 = 0;
    init_user();
    init_IDT();
    //enable interrupts
    identity_init();
    
-//    asm volatile("sti"); 
-   int32_trigger();
+   asm volatile("sti; nop"); 
+//    int32_trigger();
    while(1);
 }

@@ -58,10 +58,9 @@ void __regparm__(1) intr_hdlr(int_ctx_t *ctx)
    uint8_t vector = ctx->nr.blow;
    debug("Test: %d\n", vector);
    if (vector == TASK_SWITCH_EXCP){
-      debug("ouiiii\n");
       int32_handler(ctx);
    }
-   if(vector < NR_EXCP)
+   else if(vector < NR_EXCP)
       excp_hdlr(ctx);
    else
       debug("ignore IRQ %d\n", vector);
