@@ -58,6 +58,7 @@ void __regparm__(1) intr_hdlr(int_ctx_t *ctx)
    uint8_t vector = ctx->nr.blow;
    debug("Test: %d\n", vector);
    if (vector == TASK_SWITCH_EXCP){
+      debug("OUIIII\n");
       int32_handler(ctx);
    }
    else if(vector < NR_EXCP)

@@ -59,7 +59,7 @@ tss_t      TSS;
 #define c3_dsc(_d) gdt_flat_dsc(_d,3,SEG_DESC_CODE_XR)
 #define d3_dsc(_d) gdt_flat_dsc(_d,3,SEG_DESC_DATA_RW)
 
-static int incr = 1;
+// static int incr = 1;
 
 //userstacks a partir de 0x1000000 - 1 page de 4ko chacune (derniere @)
 static uint32_t   ustack1 = 0x1001000 - 0x04;
@@ -105,21 +105,6 @@ struct task_struct task2;
 
 struct task_struct * current = &task1;
 
-
-void schedule (void)
-{
-    // // struct task_struct * ptr;
-    // uint32_t * stack_ptr;
-
-    // //mettre le pointeur pile actuel dans stack_ptr
-    // asm volatile (
-    //     "mov (%%ebp), %%eax\n"
-    //     "mov %%eax, %0"
-    //     :"=m"(stack_ptr)
-    //     :
-    // );
-}
-
 void int32_trigger()  //for test purposes
 {
     debug("int32 trigger\n");
@@ -127,7 +112,6 @@ void int32_trigger()  //for test purposes
     debug("\n\n\n\n");
     debug("int32 trigger retour\n");
 }
-
 
 void sys_counter(uint32_t *counter)
 {
@@ -157,7 +141,7 @@ void __attribute__ ((section(".user1"),aligned(PAGE_SIZE))) user1()
     //call sys_counter with the virtual address
     uint32_t *v1 = (uint32_t*)0x802000;
     *v1 = *v1 + 1;
-   while(1);
+    while(1);
 }
 
 // note: 0xc02000 = virtual address for user2 to the shared memory
@@ -211,13 +195,14 @@ void init_user()
    idt_reg_t  idtr;
 
    get_idtr(idtr);
-   dsc = &idtr.desc[0x80];
-   dsc->dpl = 3;
 
    dsc = &idtr.desc[32];
    debug("priviledge level: %d\n", dsc->dpl);
    dsc->dpl = 3;
    debug("priviledge level: %d\n", dsc->dpl);
+
+   dsc = &idtr.desc[0x80];
+   dsc->dpl = 3;
 
    // 3: install kernel syscall handler
    dsc->offset_1 = (uint16_t)((uint32_t)sys_counter_kernel);
@@ -270,6 +255,60 @@ void init_user()
     // ctx_init->eip.raw =   (uint32_t) (&user2);
 }
 
+// void save_task (struct task_struct * task)
+// {
+   
+//     uint32_t * stack_ptr;
+
+//     //mettre le pointeur pile actuel dans stack_ptr
+//     asm volatile (
+//         "mov (%%ebp), %%eax\n"
+//         "mov %%eax, %0"
+//         :"=m"(stack_ptr)
+//         :
+//     );
+
+//     //Stack layout:
+
+// }
+void switch_to_task (struct task_struct * task)
+{
+   
+   TSS.s0.esp = task->kernel_stack;
+   TSS.s0.ss  = d0_sel;
+   asm volatile (
+      "movl %0, %%eax      \n"      // puts the adress of the task in eax
+      // 0x40 = 64
+      // sizeof(context) = 60, add 4 (for the kernel stack), 
+      // =64 to access cr3 in the task structure
+      // decrease by 4 for each following word (0x3c, 0x38 etc)
+      "mov 0x40(%%eax),%%ebx \n"    
+      "mov %%ebx,%%cr3	\n"			// Change cr3 - the address of the page directory for this task
+	  "mov 0x3c(%%eax),%%esp \n"	// Change kernel stack
+
+    // push the appropriate registers onto the stack in order to "resume" task execution
+	  "pushl 0x38(%%eax)	    \n" //	 ss
+	  "pushl 0x34(%%eax)	    \n" //	 esp
+	  "pushl 0x30(%%eax)	    \n"	//   eflags
+	  "pushl 0x2c(%%eax)		\n" //	 push cs
+	  "pushl 0x28(%%eax)		\n" //	 push eip
+
+	  "pushl 0x1c(%%eax)		\n" //	 eax
+	  "pushl 0x18(%%eax)		\n" //	 ecx
+	  "pushl 0x14(%%eax)		\n" //	 edx
+	  "pushl 0x10(%%eax)		\n" //	 ebx
+	  "pushl 0xc(%%eax)			\n" //	 esp
+	  "pushl 0x8(%%eax)			\n" //	 ebp
+	  "pushl 0x4(%%eax)			\n" //	 esi
+	  "pushl (%%eax)			\n" //	 edi
+      "popa ; iret;"
+      :
+      :"r"(task)
+      :
+   );
+
+}
+
 //=============================================================================
 
 // It is the interrupt 32 that will switch between the two tasks.
@@ -306,44 +345,86 @@ void int32_handler(int_ctx_t* ctx)
         :"=m"(stack_ptr)
         :
     );
+    debug ("stack content: %x", *stack_ptr);
+    //observations led to : edi is at stack_ptr[2]
+    //puis sauvegarder contexte TODO
+    //puis switch task au prochain
+
+    switch_to_task(&task1);
     
 
-    if (incr == 0){
-        //display number
-        debug("Display\n");
-        incr = 1;
-        set_cr3((uint32_t)0x610000);
-        debug("Changes CR3: its value is now %lx\n", get_cr3());
-        TSS.s0.esp = user_kstack1;
-        TSS.s0.ss  = d0_sel;
-        tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
-        set_tr(ts_sel);
-        asm volatile (
-            "mov %0, %%esp \n" //mettre user_kstack1 dans esp
-            "iret"
-            ::
-            "r"(user_kstack1)
-        );
+    // if (incr == 0){
+    //     //display number
+    //     debug("Display\n");
+    //     incr = 1;
+    //     set_cr3((uint32_t)0x610000);
+    //     debug("Changes CR3: its value is now %lx\n", get_cr3());
+    //     TSS.s0.esp = user_kstack1;
+    //     TSS.s0.ss  = d0_sel;
+    //     tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
+    //     set_tr(ts_sel);
+    //     asm volatile (
+    //         "mov %0, %%esp \n" //mettre user_kstack1 dans esp
+    //         "iret"
+    //         ::
+    //         "r"(user_kstack1)
+    //     );
 
-    } else {
-        //increment number
-        debug("Increment\n");
-        incr = 0;
-        set_cr3((uint32_t)0x620000);
-        uint32_t lol = get_cr3();
-        debug("Changes CR3: its value is now %lx\n", lol);
-        TSS.s0.esp = user_kstack2;
-        TSS.s0.ss  = d0_sel;
-        tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
-        set_tr(ts_sel);
-        asm volatile (
-            "mov %0, %%esp \n" //mettre user_kstack1 dans esp
-            "iret"
-            ::
-            "r"(user_kstack2)
-        );
-    }
-        debug("pas de #GP\n");
+    // } else {
+    //     //increment number
+    //     debug("Increment\n");
+    //     incr = 0;
+    //     set_cr3((uint32_t)0x620000);
+    //     uint32_t lol = get_cr3();
+    //     debug("Changes CR3: its value is now %lx\n", lol);
+    //     TSS.s0.esp = user_kstack2;
+    //     TSS.s0.ss  = d0_sel;
+    //     tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
+    //     set_tr(ts_sel);
+    //     asm volatile (
+    //         "mov %0, %%esp \n" //mettre user_kstack1 dans esp
+    //         "iret"
+    //         ::
+    //         "r"(user_kstack2)
+    //     );
+    // }
+    //     debug("pas de #GP\n");
+    // if (incr == 0){
+    //     //display number
+    //     debug("Display\n");
+    //     incr = 1;
+    //     set_cr3((uint32_t)0x610000);
+    //     debug("Changes CR3: its value is now %lx\n", get_cr3());
+    //     TSS.s0.esp = user_kstack1;
+    //     TSS.s0.ss  = d0_sel;
+    //     tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
+    //     set_tr(ts_sel);
+    //     asm volatile (
+    //         "mov %0, %%esp \n" //mettre user_kstack1 dans esp
+    //         "iret"
+    //         ::
+    //         "r"(user_kstack1)
+    //     );
+
+    // } else {
+    //     //increment number
+    //     debug("Increment\n");
+    //     incr = 0;
+    //     set_cr3((uint32_t)0x620000);
+    //     uint32_t lol = get_cr3();
+    //     debug("Changes CR3: its value is now %lx\n", lol);
+    //     TSS.s0.esp = user_kstack2;
+    //     TSS.s0.ss  = d0_sel;
+    //     tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
+    //     set_tr(ts_sel);
+    //     asm volatile (
+    //         "mov %0, %%esp \n" //mettre user_kstack1 dans esp
+    //         "iret"
+    //         ::
+    //         "r"(user_kstack2)
+    //     );
+    // }
+    //     debug("pas de #GP\n");
 
     ///3.5: aligner la pile et avoir le bon esp.
     // asm volatile ("popa; leave ; iret");
@@ -506,6 +587,6 @@ void tp()
    identity_init();
    
    asm volatile("sti; nop"); 
-//    int32_trigger();
+   int32_trigger();
    while(1);
 }
