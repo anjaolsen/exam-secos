@@ -67,6 +67,58 @@ static uint32_t   ustack2 = 0x1002000 - 0x04; //0x 100000 = 16^5 = 1M , 0x001000
 static uint32_t   user_kstack1 = 0x1004000; 
 static uint32_t   user_kstack2 = 0x1006000; 
 
+struct task_struct
+{
+	int_ctx_t 	context;
+	uint32_t 	kernel_stack;
+	uint32_t 	cr3;	
+	struct task_struct * next_task;
+};
+
+void create_task(struct task_struct* task, uint32_t function_address,
+	uint32_t kernel_stack, uint32_t user_stack, struct task_struct* next_task)
+{
+	memset(task, 0, sizeof(struct task_struct));
+    //initialize the context as if the task was interrupted
+	task->context.eip.raw = function_address;
+	task->context.cs.raw = c3_sel;
+	task->context.eflags.raw = get_flags() ;
+	task->context.esp.raw = user_stack;
+	task->context.ss.raw = d3_sel;
+
+	task->kernel_stack = kernel_stack;
+
+	task->next_task = next_task;
+}
+
+// void store_context_before_switch(struct task_struct* task, int_ctx_t* ctx)
+// {
+//     // "pop" the context by moving the stack pointer to what was pushed before the context (eip)
+// 	task->kernel_stack = (uint32_t)(ctx) + sizeof(int_ctx_t);
+//     // put the context in the context-attribute 
+// 	memcpy(&task->context, ctx, sizeof(int_ctx_t));	
+// }
+
+
+struct task_struct task1;
+struct task_struct task2;
+
+struct task_struct * current = &task1;
+
+
+void schedule (void)
+{
+    // // struct task_struct * ptr;
+    // uint32_t * stack_ptr;
+
+    // //mettre le pointeur pile actuel dans stack_ptr
+    // asm volatile (
+    //     "mov (%%ebp), %%eax\n"
+    //     "mov %%eax, %0"
+    //     :"=m"(stack_ptr)
+    //     :
+    // );
+}
 
 void int32_trigger()  //for test purposes
 {
@@ -95,7 +147,7 @@ void sys_counter(uint32_t *counter)
 //note: this is not finished... I don t know quite how to implement this yet. 
 void __regparm__(1) sys_counter_kernel(int_ctx_t *ctx)
 {
-   debug("print syscall: %d", ctx->gpr.eax);
+   debug("print syscall: %d\n", ctx->gpr.eax);
 
 }
 
@@ -162,6 +214,11 @@ void init_user()
    dsc = &idtr.desc[0x80];
    dsc->dpl = 3;
 
+   dsc = &idtr.desc[32];
+   debug("priviledge level: %d\n", dsc->dpl);
+   dsc->dpl = 3;
+   debug("priviledge level: %d\n", dsc->dpl);
+
    // 3: install kernel syscall handler
    dsc->offset_1 = (uint16_t)((uint32_t)sys_counter_kernel);
    dsc->offset_2 = (uint16_t)(((uint32_t)sys_counter_kernel)>>16);
@@ -172,27 +229,31 @@ void init_user()
 // cs (ex 0x8:0x30456b) 
 // eip (0x8:0x30456b) <---esp
 //    user_kstack1
-    uint32_t * ptr = (uint32_t*)user_kstack1;
-    *ptr = (uint32_t) (&user1);
-    ptr++;
-    *ptr = c3_sel;
-    ptr++;
-    *ptr = 0x02;
-    ptr++;
-    *ptr = ustack1;
-    ptr++;
-    *ptr = d3_sel;
 
-    ptr = (uint32_t*)user_kstack2;
-    *ptr = (uint32_t) (&user2);
-    ptr++;
-    *ptr = c3_sel;
-    ptr++;
-    *ptr = 0x02;
-    ptr++;
-    *ptr = ustack2;
-    ptr++;
-    *ptr = d3_sel;
+    create_task(&task1, (uint32_t) &user1, user_kstack1, ustack1, &task2);
+    create_task(&task2, (uint32_t)&user2, user_kstack2, ustack2, &task1);
+
+    // uint32_t * ptr = (uint32_t*)user_kstack1;
+    // *ptr = (uint32_t) (&user1);
+    // ptr++;
+    // *ptr = c3_sel;
+    // ptr++;
+    // *ptr = 0x0202;
+    // ptr++;
+    // *ptr = ustack1;
+    // ptr++;
+    // *ptr = d3_sel;
+
+    // ptr = (uint32_t*)user_kstack2;
+    // *ptr = (uint32_t) (&user2);
+    // ptr++;
+    // *ptr = c3_sel;
+    // ptr++;
+    // *ptr = 0x0202;
+    // ptr++;
+    // *ptr = ustack2;
+    // ptr++;
+    // *ptr = d3_sel;
  
     // int_ctx_t* ctx_init = (int_ctx_t*) user_kstack1;
     // ctx_init->ss.raw = d3_sel;
@@ -230,9 +291,22 @@ void int32_handler(int_ctx_t* ctx)
     debug("esp: %lx\n", ctx->gpr.esp);
     if (ctx->gpr.esp.raw < 0x1001000){
         debug("La tache interrompue est une tache noyau\n");
+        
     } else {
         debug("La tache interrompue est une tache utilisateur\n");
     }
+
+     // struct task_struct * ptr;
+    uint32_t * stack_ptr;
+
+    //mettre le pointeur pile actuel dans stack_ptr
+    asm volatile (
+        "mov (%%ebp), %%eax\n"
+        "mov %%eax, %0"
+        :"=m"(stack_ptr)
+        :
+    );
+    
 
     if (incr == 0){
         //display number
@@ -274,6 +348,7 @@ void int32_handler(int_ctx_t* ctx)
     ///3.5: aligner la pile et avoir le bon esp.
     // asm volatile ("popa; leave ; iret");
 }
+
 
 
 
@@ -413,6 +488,7 @@ void identity_init()
    debug("memory section user1 PTB3[0] = %p\n", ptb3[0].raw);
    debug("memory section user2 PTB4[1] = %p\n", ptb4[0].raw);
    debug("Adresse user1 = %p\n", &user1);
+   debug("taille ctx = %d\n", sizeof(int_ctx_t));
 
 }
 
@@ -420,8 +496,10 @@ void identity_init()
 
 void tp()
 {
-   uint32_t *v2 = (uint32_t*)0xc02000;
+    
+   uint32_t *v2 = (uint32_t*)0x1801000;
    *v2 = 0;
+   debug("zone de memoire partagee : v2 = %d\n", *v2);
    init_user();
    init_IDT();
    //enable interrupts
