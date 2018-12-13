@@ -275,7 +275,7 @@ void switch_to_task (struct task_struct * task)
 {
    
    TSS.s0.esp = task->kernel_stack;
-   TSS.s0.ss  = d0_sel;
+   TSS.s0.ss  = d3_sel;
    asm volatile (
       "movl %0, %%eax      \n"      // puts the adress of the task in eax
       // 0x40 = 64
@@ -322,6 +322,41 @@ void switch_to_task (struct task_struct * task)
 //       "push %2 \n" // cs
 //       "push %3 \n" // eip
 // and put only the three last if it changes from user to user
+
+//T0D0 remove comment
+// struct task_struct
+// {
+// 	int_ctx_t 	context;
+// 	uint32_t 	kernel_stack;
+// 	uint32_t 	cr3;	
+// 	struct task_struct * next_task;
+// };
+void save_task (uint32_t * stack_ptr, struct task_struct * task)
+{
+    //observations with gdb led to : edi is at stack_ptr[2]
+    task->context.gpr.edi.raw = stack_ptr[2];
+    task->context.gpr.esi.raw = stack_ptr[3];
+    task->context.gpr.ebp.raw = stack_ptr[4];
+    task->context.gpr.esp.raw = stack_ptr[5];
+    task->context.gpr.ebx.raw = stack_ptr[6];
+    task->context.gpr.edx.raw = stack_ptr[7];
+    task->context.gpr.ecx.raw = stack_ptr[8];
+    task->context.gpr.eax.raw = stack_ptr[9];
+    task->context.nr.raw = stack_ptr[10];
+    task->context.err.raw = stack_ptr[11];
+    task->context.eip.raw = stack_ptr[12];
+    task->context.cs.raw = stack_ptr[13];
+    task->context.eflags.raw = stack_ptr[14];
+    task->context.esp.raw = stack_ptr[15];
+    task->context.ss.raw = stack_ptr[16];
+    debug("Test save: esp = %d\n", task->context.esp.raw);
+    // task->kernel_stack = *(stack_ptr + sizeof(int_ctx_t)) );
+    task->kernel_stack = stack_ptr[17];
+    debug("Test save: kernel stack metode1 = %d\n", *(stack_ptr + sizeof(int_ctx_t)) );
+    debug("Test save: kernel stack metode2 = %d\n", stack_ptr[17]);
+
+}
+
 void int32_handler(int_ctx_t* ctx) 
 {
     asm volatile ("pusha");
@@ -346,11 +381,13 @@ void int32_handler(int_ctx_t* ctx)
         :
     );
     debug ("stack content: %x", *stack_ptr);
-    //observations led to : edi is at stack_ptr[2]
-    //puis sauvegarder contexte TODO
-    //puis switch task au prochain
+    
+    
+    
+    save_task(stack_ptr, current);
 
-    switch_to_task(&task1);
+    //puis switch task au prochain
+    // switch_to_task(current->next_task);  //DET ER NOE GALT HER
     
 
     // if (incr == 0){
@@ -587,6 +624,8 @@ void tp()
    identity_init();
    
    asm volatile("sti; nop"); 
-   int32_trigger();
+//    debug("START task1\n");
+//    switch_to_task(&task1);
+//    int32_trigger();
    while(1);
 }
