@@ -65,7 +65,15 @@ tss_t      TSS;
 static uint32_t   ustack1 = 0x1001000 - 0x04;
 static uint32_t   ustack2 = 0x1002000 - 0x04; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
 static uint32_t   user_kstack1 = 0x1004000; 
-static uint32_t   user_kstack2 = 0x1006000; 
+static uint32_t   user_kstack2 = 0x1006000;
+
+// static pde32_t *pgd = (pde32_t*)0x600000; //PGD
+// static pde32_t *pgd_user1 = (pde32_t*)0x610000; //PGD de user1
+// static pde32_t *pgd_user2 = (pde32_t*)0x620000; //PGD de user2
+
+#define PGD_USER_1 0x610000
+#define PGD_USER_2 0x620000
+
 
 struct task_struct
 {
@@ -76,19 +84,21 @@ struct task_struct
 };
 
 void create_task(struct task_struct* task, uint32_t function_address,
-	uint32_t kernel_stack, uint32_t user_stack, struct task_struct* next_task)
+	uint32_t kernel_stack, uint32_t user_stack, struct task_struct* next_task, uint32_t cr3)
 {
 	memset(task, 0, sizeof(struct task_struct));
     //initialize the context as if the task was interrupted
 	task->context.eip.raw = function_address;
 	task->context.cs.raw = c3_sel;
-	task->context.eflags.raw = get_flags() ;
+	task->context.eflags.raw = get_flags();// 0x202; //set int to true , get_flags() |
 	task->context.esp.raw = user_stack;
 	task->context.ss.raw = d3_sel;
 
 	task->kernel_stack = kernel_stack;
 
 	task->next_task = next_task;
+
+    task->cr3 = cr3;
 }
 
 // void store_context_before_switch(struct task_struct* task, int_ctx_t* ctx)
@@ -215,97 +225,58 @@ void init_user()
 // eip (0x8:0x30456b) <---esp
 //    user_kstack1
 
-    create_task(&task1, (uint32_t) &user1, user_kstack1, ustack1, &task2);
-    create_task(&task2, (uint32_t)&user2, user_kstack2, ustack2, &task1);
+    create_task(&task1, (uint32_t) &user1, user_kstack1, ustack1, &task2, PGD_USER_1);
+    create_task(&task2, (uint32_t)&user2, user_kstack2, ustack2, &task1, PGD_USER_2);
 
-    // uint32_t * ptr = (uint32_t*)user_kstack1;
-    // *ptr = (uint32_t) (&user1);
-    // ptr++;
-    // *ptr = c3_sel;
-    // ptr++;
-    // *ptr = 0x0202;
-    // ptr++;
-    // *ptr = ustack1;
-    // ptr++;
-    // *ptr = d3_sel;
-
-    // ptr = (uint32_t*)user_kstack2;
-    // *ptr = (uint32_t) (&user2);
-    // ptr++;
-    // *ptr = c3_sel;
-    // ptr++;
-    // *ptr = 0x0202;
-    // ptr++;
-    // *ptr = ustack2;
-    // ptr++;
-    // *ptr = d3_sel;
- 
-    // int_ctx_t* ctx_init = (int_ctx_t*) user_kstack1;
-    // ctx_init->ss.raw = d3_sel;
-    // ctx_init->esp.raw = ustack1;
-    // ctx_init->eflags.raw = 0x02;
-    // ctx_init->cs.raw = c3_sel;
-    // ctx_init->eip.raw =   (uint32_t) (&user1);
-    
-    // ctx_init = (int_ctx_t*) user_kstack2;
-    // ctx_init->ss.raw = d3_sel;
-    // ctx_init->esp.raw = ustack2;
-    // ctx_init->eflags.raw = 0x02;
-    // ctx_init->cs.raw = c3_sel;
-    // ctx_init->eip.raw =   (uint32_t) (&user2);
 }
 
-// void save_task (struct task_struct * task)
-// {
-   
-//     uint32_t * stack_ptr;
-
-//     //mettre le pointeur pile actuel dans stack_ptr
-//     asm volatile (
-//         "mov (%%ebp), %%eax\n"
-//         "mov %%eax, %0"
-//         :"=m"(stack_ptr)
-//         :
-//     );
-
-//     //Stack layout:
-
-// }
 void switch_to_task (struct task_struct * task)
 {
    
    TSS.s0.esp = task->kernel_stack;
    TSS.s0.ss  = d3_sel;
+   debug("test1. eflags dans task: 0x%x\n", task->context.eflags.raw);
+
    asm volatile (
-      "movl %0, %%eax      \n"      // puts the adress of the task in eax
-      // 0x40 = 64
-      // sizeof(context) = 60, add 4 (for the kernel stack), 
-      // =64 to access cr3 in the task structure
-      // decrease by 4 for each following word (0x3c, 0x38 etc)
-      "mov 0x40(%%eax),%%ebx \n"    
-      "mov %%ebx,%%cr3	\n"			// Change cr3 - the address of the page directory for this task
-	  "mov 0x3c(%%eax),%%esp \n"	// Change kernel stack
+      "mov %0, %%cr3	\n"			// Change cr3 - the address of the page directory for this task
+	  "mov %1, %%esp \n"	// Change kernel stack
 
-    // push the appropriate registers onto the stack in order to "resume" task execution
-	  "pushl 0x38(%%eax)	    \n" //	 ss
-	  "pushl 0x34(%%eax)	    \n" //	 esp
-	  "pushl 0x30(%%eax)	    \n"	//   eflags
-	  "pushl 0x2c(%%eax)		\n" //	 push cs
-	  "pushl 0x28(%%eax)		\n" //	 push eip
+    // // push the appropriate registers onto the stack in order to "resume" task execution
+	//   "mov %2,%%eax	\n"
+      "pushl %2	    \n" //	 ss
+	  "pushl %3	    \n" //	 esp
+	  "pushl %4	    \n"	//   eflags
+	  "pushl %5		\n" //	 push cs
+	  "pushl %6		\n" //	 push eip
 
-	  "pushl 0x1c(%%eax)		\n" //	 eax
-	  "pushl 0x18(%%eax)		\n" //	 ecx
-	  "pushl 0x14(%%eax)		\n" //	 edx
-	  "pushl 0x10(%%eax)		\n" //	 ebx
-	  "pushl 0xc(%%eax)			\n" //	 esp
-	  "pushl 0x8(%%eax)			\n" //	 ebp
-	  "pushl 0x4(%%eax)			\n" //	 esi
-	  "pushl (%%eax)			\n" //	 edi
+	  "pushl %7		\n" //	 eax
+	  "pushl %8		\n" //	 ecx
+	  "pushl %9		\n" //	 edx
+	  "pushl %10		\n" //	 ebx
+	  "pushl %11			\n" //	 esp
+	  "pushl %12			\n" //	 ebp
+	  "pushl %13			\n" //	 esi
+	  "pushl %14			\n" //	 edi
       "popa ; iret;"
       :
-      :"r"(task)
+      :"r"(task->cr3), 
+      "r"(task->kernel_stack), 
+      "g"(task->context.ss.raw),
+      "g"(task->context.esp.raw),
+      "g"(task->context.eflags.raw),
+      "g"(task->context.cs.raw),
+      "g"(task->context.eip.raw),
+      "g"(task->context.gpr.eax),
+      "g"(task->context.gpr.ecx),
+      "g"(task->context.gpr.edx),
+      "g"(task->context.gpr.ebx),
+      "g"(task->context.gpr.esp),
+      "g"(task->context.gpr.ebp),
+      "g"(task->context.gpr.esi),
+      "g"(task->context.gpr.edi)
       :
    );
+   debug("test2\n");
 
 }
 
@@ -335,24 +306,39 @@ void save_task (uint32_t * stack_ptr, struct task_struct * task)
 {
     //observations with gdb led to : edi is at stack_ptr[2]
     task->context.gpr.edi.raw = stack_ptr[2];
+    debug("Test save: edi = %d\n", task->context.gpr.edi.raw);
     task->context.gpr.esi.raw = stack_ptr[3];
+    debug("Test save: esi = %d\n", task->context.gpr.esi.raw);
     task->context.gpr.ebp.raw = stack_ptr[4];
+    debug("Test save: ebp = %d\n", task->context.gpr.ebp.raw);
     task->context.gpr.esp.raw = stack_ptr[5];
+    debug("Test save: esp = %d\n", task->context.gpr.esp.raw);
     task->context.gpr.ebx.raw = stack_ptr[6];
+    debug("Test save: ebx = %d\n", task->context.gpr.ebx.raw);
     task->context.gpr.edx.raw = stack_ptr[7];
+    debug("Test save: edx = %d\n", task->context.gpr.edx.raw);
     task->context.gpr.ecx.raw = stack_ptr[8];
+    debug("Test save: ecx = %d\n", task->context.gpr.ecx.raw);
     task->context.gpr.eax.raw = stack_ptr[9];
+    debug("Test save: eax = %d\n", task->context.gpr.eax.raw);
     task->context.nr.raw = stack_ptr[10];
+    debug("Test save: nr = %d\n", task->context.nr.raw);
     task->context.err.raw = stack_ptr[11];
+    debug("Test save: err = %d\n", task->context.err.raw);
     task->context.eip.raw = stack_ptr[12];
+    debug("Test save: eip = %d\n", task->context.eip.raw);
     task->context.cs.raw = stack_ptr[13];
+    debug("Test save: cs = %d\n", task->context.cs.raw);
     task->context.eflags.raw = stack_ptr[14];
+    debug("Test save: eflags = %d\n", task->context.eflags.raw);
     task->context.esp.raw = stack_ptr[15];
-    task->context.ss.raw = stack_ptr[16];
     debug("Test save: esp = %d\n", task->context.esp.raw);
+    debug("Test save: ss before = %d\n", task->context.ss.raw);
+    // task->context.ss.raw = stack_ptr[16];
+    // debug("Test save: ss after = %d\n", task->context.ss.raw);
+
     // task->kernel_stack = *(stack_ptr + sizeof(int_ctx_t)) );
     task->kernel_stack = stack_ptr[17];
-    debug("Test save: kernel stack metode1 = %d\n", *(stack_ptr + sizeof(int_ctx_t)) );
     debug("Test save: kernel stack metode2 = %d\n", stack_ptr[17]);
 
 }
@@ -368,26 +354,27 @@ void int32_handler(int_ctx_t* ctx)
         
     } else {
         debug("La tache interrompue est une tache utilisateur\n");
+         // struct task_struct * ptr;
+        uint32_t * stack_ptr;
+
+        //mettre le pointeur pile actuel dans stack_ptr
+        asm volatile (
+            "mov (%%ebp), %%eax\n"
+            "mov %%eax, %0"
+            :"=m"(stack_ptr)
+            :
+        );
+        debug ("stack content: %x\n", *stack_ptr);
+        
+        
+        
+        save_task(stack_ptr, current);
+
+        //puis switch task au prochain
+        switch_to_task(current);  //DET ER NOE GALT HER
     }
 
-     // struct task_struct * ptr;
-    uint32_t * stack_ptr;
-
-    //mettre le pointeur pile actuel dans stack_ptr
-    asm volatile (
-        "mov (%%ebp), %%eax\n"
-        "mov %%eax, %0"
-        :"=m"(stack_ptr)
-        :
-    );
-    debug ("stack content: %x", *stack_ptr);
     
-    
-    
-    save_task(stack_ptr, current);
-
-    //puis switch task au prochain
-    // switch_to_task(current->next_task);  //DET ER NOE GALT HER
     
 
     // if (incr == 0){
@@ -497,6 +484,11 @@ void enable_paging()
    set_cr0(cr0|CR0_PG);
 }
 
+// pde32_t *pgd = (pde32_t*)0x600000; //PGD
+// pde32_t *pgd_user1 = (pde32_t*)0x610000; //PGD de user1
+// pde32_t *pgd_user2 = (pde32_t*)0x620000; //PGD de user2
+
+
 void identity_init()
 {
    int      i;
@@ -516,7 +508,7 @@ void identity_init()
 //    pte32_t *ptb1_user2 = (pte32_t*)0x621000; 
 
 
-//=========== mapper la pgd ============
+
    // 
    for(i=0;i<1024;i++)
       pg_set_entry(&ptb1[i], PG_KRN|PG_RW, i);
@@ -576,7 +568,7 @@ void identity_init()
    pg_set_entry(&ptb_ustack2[1], PG_USR|PG_RW, 1+4*1024); //ustack2
 
    pg_set_entry(&ptb_ustack1[3], PG_USR|PG_RW, 3+4*1024); //user kstack1
-   pg_set_entry(&ptb_ustack2[4], PG_USR|PG_RW, 4+4*1024); //user kstack1
+   pg_set_entry(&ptb_ustack1[4], PG_USR|PG_RW, 4+4*1024); //user kstack1
    pg_set_entry(&ptb_ustack2[5], PG_USR|PG_RW, 5+4*1024); //user kstack2
    pg_set_entry(&ptb_ustack2[6], PG_USR|PG_RW, 6+4*1024); //user kstack2
 
@@ -618,14 +610,15 @@ void tp()
    uint32_t *v2 = (uint32_t*)0x1801000;
    *v2 = 0;
    debug("zone de memoire partagee : v2 = %d\n", *v2);
+
    init_user();
    init_IDT();
    //enable interrupts
    identity_init();
-   
    asm volatile("sti; nop"); 
-//    debug("START task1\n");
-//    switch_to_task(&task1);
+
+   debug("START task1\n");
+   switch_to_task(&task1);
 //    int32_trigger();
    while(1);
 }
