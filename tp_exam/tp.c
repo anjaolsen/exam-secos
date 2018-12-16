@@ -90,7 +90,7 @@ void create_task(struct task_struct* task, uint32_t function_address,
     //initialize the context as if the task was interrupted
 	task->context.eip.raw = function_address;
 	task->context.cs.raw = c3_sel;
-	task->context.eflags.raw = get_flags();// 0x202; //set int to true , get_flags() |
+	task->context.eflags.raw = get_flags()|0x200;// 0x202; //set int to true , get_flags() |
 	task->context.esp.raw = user_stack;
 	task->context.ss.raw = d3_sel;
 
@@ -125,53 +125,39 @@ void int32_trigger()  //for test purposes
 
 void sys_counter(uint32_t *counter)
 {
-//    debug("Counter: %d\n", *counter);
+
+    //T0D0 : find out how to pass parameter to the syscall 
    asm volatile (
-      "leave ; pusha        \n"
-      "movl %0, %%eax      \n"
-    //   "call sys_counter_kernel \n"
-      "int  $80 \n"
-      "popa ; iret;"
+      "mov %0, %%ebx\n"
+      "int $0x80"
       :
-      :"r"(counter)
-      :
-   );
+      : "r"(counter)
+    );
 }
 
 //note: this is not finished... I don t know quite how to implement this yet. 
-void __regparm__(1) sys_counter_kernel(int_ctx_t *ctx)
+void __regparm__(1) sys_counter_kernel(uint32_t *ptr)
 {
-   debug("print syscall: %d\n", ctx->gpr.eax);
+    //T0D0 : verifier l argument
+   debug("counter: %d\n", *ptr);
 
 }
 
 // note: 0x802000 = virtual address for user1 to the shared memory
 void __attribute__ ((section(".user1"),aligned(PAGE_SIZE))) user1()
 {
-    //call sys_counter with the virtual address
     uint32_t *v1 = (uint32_t*)0x802000;
-    *v1 = *v1 + 1;
-    while(1);
+    while(1){
+        *v1 = (*v1) + 1;
+    }   
 }
 
 // note: 0xc02000 = virtual address for user2 to the shared memory
 void __attribute__ ((section(".user2"),aligned(PAGE_SIZE))) user2()
 {
-    // asm volatile (
-    //   "pusha\n"
-    //   "int $0x80\n"
-    //   "popa;"
-    //   );
-
-
-
-//    debug("user2\n");
-//    uint32_t *v2 = (uint32_t*)0xc02000;
-    // asm("int $32"); 
-
-//    sys_counter(v2);
-
-   while(1);
+   while(1){
+        sys_counter((uint32_t *)0xc0200);
+    }  
 }
 
 
@@ -220,9 +206,9 @@ void init_user()
  
 // mettre les choses pertinentes dans les piles noyaux, comme si ils avaient deja ete
 // interrompues par une interruption par exemple. 
-// flags (ex 0x2)
-// cs (ex 0x8:0x30456b) 
-// eip (0x8:0x30456b) <---esp
+// flags 
+// cs  
+// eip  <---esp
 //    user_kstack1
 
     create_task(&task1, (uint32_t) &user1, user_kstack1, ustack1, &task2, PGD_USER_1);
@@ -235,7 +221,7 @@ void switch_to_task (struct task_struct * task)
    
    TSS.s0.esp = task->kernel_stack;
    TSS.s0.ss  = d3_sel;
-   debug("test1. eflags dans task: 0x%x\n", task->context.eflags.raw);
+   debug("test1. eflags of task: 0x%x\n", task->context.eflags.raw);
 
    asm volatile (
       "mov %0, %%cr3	\n"			// Change cr3 - the address of the page directory for this task
@@ -276,70 +262,43 @@ void switch_to_task (struct task_struct * task)
       "g"(task->context.gpr.edi)
       :
    );
-   debug("test2\n");
 
 }
 
-//=============================================================================
-
-// It is the interrupt 32 that will switch between the two tasks.
-// (irq0 = horloge)
-// It must therefore ;  know if it it interrupts a kernel or a user task
-//                      know if it should switch from user1 to user2 or the opposite
-// put the following things on the stack : if it switches from a kernel task to a user task
-//       "push %0 \n" // ss
-//       "push %1 \n" // esp
-//       "pushf   \n" // eflags
-//       "push %2 \n" // cs
-//       "push %3 \n" // eip
-// and put only the three last if it changes from user to user
-
-//T0D0 remove comment
-// struct task_struct
-// {
-// 	int_ctx_t 	context;
-// 	uint32_t 	kernel_stack;
-// 	uint32_t 	cr3;	
-// 	struct task_struct * next_task;
-// };
 void save_task (uint32_t * stack_ptr, struct task_struct * task)
 {
     //observations with gdb led to : edi is at stack_ptr[2]
-    task->context.gpr.edi.raw = stack_ptr[2];
+    task->context.gpr.edi.raw = stack_ptr[0];
     debug("Test save: edi = %d\n", task->context.gpr.edi.raw);
-    task->context.gpr.esi.raw = stack_ptr[3];
+    task->context.gpr.esi.raw = stack_ptr[1];
     debug("Test save: esi = %d\n", task->context.gpr.esi.raw);
-    task->context.gpr.ebp.raw = stack_ptr[4];
+    task->context.gpr.ebp.raw = stack_ptr[2];
     debug("Test save: ebp = %d\n", task->context.gpr.ebp.raw);
-    task->context.gpr.esp.raw = stack_ptr[5];
+    task->context.gpr.esp.raw = stack_ptr[3];
     debug("Test save: esp = %d\n", task->context.gpr.esp.raw);
-    task->context.gpr.ebx.raw = stack_ptr[6];
+    task->context.gpr.ebx.raw = stack_ptr[4];
     debug("Test save: ebx = %d\n", task->context.gpr.ebx.raw);
-    task->context.gpr.edx.raw = stack_ptr[7];
+    task->context.gpr.edx.raw = stack_ptr[5];
     debug("Test save: edx = %d\n", task->context.gpr.edx.raw);
-    task->context.gpr.ecx.raw = stack_ptr[8];
+    task->context.gpr.ecx.raw = stack_ptr[6];
     debug("Test save: ecx = %d\n", task->context.gpr.ecx.raw);
-    task->context.gpr.eax.raw = stack_ptr[9];
+    task->context.gpr.eax.raw = stack_ptr[7];
     debug("Test save: eax = %d\n", task->context.gpr.eax.raw);
-    task->context.nr.raw = stack_ptr[10];
+    task->context.nr.raw = stack_ptr[8];
     debug("Test save: nr = %d\n", task->context.nr.raw);
-    task->context.err.raw = stack_ptr[11];
+    task->context.err.raw = stack_ptr[9];
     debug("Test save: err = %d\n", task->context.err.raw);
-    task->context.eip.raw = stack_ptr[12];
+    task->context.eip.raw = stack_ptr[10];
     debug("Test save: eip = %d\n", task->context.eip.raw);
-    task->context.cs.raw = stack_ptr[13];
+    task->context.cs.raw = stack_ptr[11];
     debug("Test save: cs = %d\n", task->context.cs.raw);
-    task->context.eflags.raw = stack_ptr[14];
+    task->context.eflags.raw = stack_ptr[12];
     debug("Test save: eflags = %d\n", task->context.eflags.raw);
-    task->context.esp.raw = stack_ptr[15];
+    task->context.esp.raw = stack_ptr[13];
     debug("Test save: esp = %d\n", task->context.esp.raw);
-    debug("Test save: ss before = %d\n", task->context.ss.raw);
-    // task->context.ss.raw = stack_ptr[16];
-    // debug("Test save: ss after = %d\n", task->context.ss.raw);
-
-    // task->kernel_stack = *(stack_ptr + sizeof(int_ctx_t)) );
-    task->kernel_stack = stack_ptr[17];
-    debug("Test save: kernel stack metode2 = %d\n", stack_ptr[17]);
+    debug("Test save: ss  = %d\n", task->context.ss.raw);
+    task->kernel_stack = stack_ptr[14];
+    debug("Test save: kernel stack = %d\n", stack_ptr[17]);
 
 }
 
@@ -349,109 +308,19 @@ void int32_handler(int_ctx_t* ctx)
     debug("\n\n\n\n");
     debug("Int32 handler\n");
     debug("esp: %lx\n", ctx->gpr.esp);
-    if (ctx->gpr.esp.raw < 0x1001000){
+    if (ctx->gpr.esp.raw < 0x800000){
         debug("La tache interrompue est une tache noyau\n");
         
     } else {
         debug("La tache interrompue est une tache utilisateur\n");
-         // struct task_struct * ptr;
-        uint32_t * stack_ptr;
-
-        //mettre le pointeur pile actuel dans stack_ptr
-        asm volatile (
-            "mov (%%ebp), %%eax\n"
-            "mov %%eax, %0"
-            :"=m"(stack_ptr)
-            :
-        );
+        uint32_t * stack_ptr = (uint32_t *) ctx->esp.raw;
         debug ("stack content: %x\n", *stack_ptr);
-        
-        
-        
         save_task(stack_ptr, current);
 
         //puis switch task au prochain
-        switch_to_task(current);  //DET ER NOE GALT HER
+        switch_to_task(current);  
     }
 
-    
-    
-
-    // if (incr == 0){
-    //     //display number
-    //     debug("Display\n");
-    //     incr = 1;
-    //     set_cr3((uint32_t)0x610000);
-    //     debug("Changes CR3: its value is now %lx\n", get_cr3());
-    //     TSS.s0.esp = user_kstack1;
-    //     TSS.s0.ss  = d0_sel;
-    //     tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
-    //     set_tr(ts_sel);
-    //     asm volatile (
-    //         "mov %0, %%esp \n" //mettre user_kstack1 dans esp
-    //         "iret"
-    //         ::
-    //         "r"(user_kstack1)
-    //     );
-
-    // } else {
-    //     //increment number
-    //     debug("Increment\n");
-    //     incr = 0;
-    //     set_cr3((uint32_t)0x620000);
-    //     uint32_t lol = get_cr3();
-    //     debug("Changes CR3: its value is now %lx\n", lol);
-    //     TSS.s0.esp = user_kstack2;
-    //     TSS.s0.ss  = d0_sel;
-    //     tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
-    //     set_tr(ts_sel);
-    //     asm volatile (
-    //         "mov %0, %%esp \n" //mettre user_kstack1 dans esp
-    //         "iret"
-    //         ::
-    //         "r"(user_kstack2)
-    //     );
-    // }
-    //     debug("pas de #GP\n");
-    // if (incr == 0){
-    //     //display number
-    //     debug("Display\n");
-    //     incr = 1;
-    //     set_cr3((uint32_t)0x610000);
-    //     debug("Changes CR3: its value is now %lx\n", get_cr3());
-    //     TSS.s0.esp = user_kstack1;
-    //     TSS.s0.ss  = d0_sel;
-    //     tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
-    //     set_tr(ts_sel);
-    //     asm volatile (
-    //         "mov %0, %%esp \n" //mettre user_kstack1 dans esp
-    //         "iret"
-    //         ::
-    //         "r"(user_kstack1)
-    //     );
-
-    // } else {
-    //     //increment number
-    //     debug("Increment\n");
-    //     incr = 0;
-    //     set_cr3((uint32_t)0x620000);
-    //     uint32_t lol = get_cr3();
-    //     debug("Changes CR3: its value is now %lx\n", lol);
-    //     TSS.s0.esp = user_kstack2;
-    //     TSS.s0.ss  = d0_sel;
-    //     tss_dsc(&GDT[ts_idx], (offset_t)&TSS);
-    //     set_tr(ts_sel);
-    //     asm volatile (
-    //         "mov %0, %%esp \n" //mettre user_kstack1 dans esp
-    //         "iret"
-    //         ::
-    //         "r"(user_kstack2)
-    //     );
-    // }
-    //     debug("pas de #GP\n");
-
-    ///3.5: aligner la pile et avoir le bon esp.
-    // asm volatile ("popa; leave ; iret");
 }
 
 
@@ -477,17 +346,12 @@ void show_cr3()
    debug("CR3 = %p\n", cr3.raw);
 }
 
-// 3
+
 void enable_paging()
 {
    uint32_t cr0 = get_cr0();
    set_cr0(cr0|CR0_PG);
 }
-
-// pde32_t *pgd = (pde32_t*)0x600000; //PGD
-// pde32_t *pgd_user1 = (pde32_t*)0x610000; //PGD de user1
-// pde32_t *pgd_user2 = (pde32_t*)0x620000; //PGD de user2
-
 
 void identity_init()
 {
@@ -497,19 +361,11 @@ void identity_init()
    pte32_t *ptb2 = (pte32_t*)0x602000;  //0x400000
    pte32_t *ptb3 = (pte32_t*)0x603000;  //0x800000
    pte32_t *ptb4 = (pte32_t*)0x604000;  //0xc00000
-//    pte32_t *ptb5 = (pte32_t*)0x605000; //0x1000000
 
-///====================paging user1 =======================
    pde32_t *pgd_user1 = (pde32_t*)0x610000; //PGD de user1
-//    pte32_t *ptb1_user1 = (pte32_t*)0x611000; //pour mapper kernel (mettre dans pdg_user1[2])
-//    pte32_t *ptb2_user1 = (pte32_t*)0x612000;
-///====================paging user2 =======================
    pde32_t *pgd_user2 = (pde32_t*)0x620000; //PGD de user2
-//    pte32_t *ptb1_user2 = (pte32_t*)0x621000; 
 
-
-
-   // 
+    //================ map the kernel ===============
    for(i=0;i<1024;i++)
       pg_set_entry(&ptb1[i], PG_KRN|PG_RW, i);
 
@@ -523,7 +379,7 @@ void identity_init()
    pg_set_entry(&pgd_user2[0], PG_KRN|PG_RW, page_nr(ptb1));
 
 
-   //=============== mapper les PTBs============
+   //=============== map the PTBs============
    
    for(i=0;i<1024;i++)
       pg_set_entry(&ptb2[i], PG_KRN|PG_RW, i+1024); 
@@ -533,44 +389,38 @@ void identity_init()
    pg_set_entry(&pgd_user2[1], PG_KRN|PG_RW, page_nr(ptb2));
 
 
-// map the user1-memory section (from 0x800000) - mappe uniquement pour user1
+    // map the user1-memory section (from 0x800000) 
    for(i=0;i<1024;i++)
       pg_set_entry(&ptb3[i], PG_USR|PG_RO, i+2*1024);
 
    pg_set_entry(&pgd_user1[2], PG_USR|PG_RW, page_nr(ptb3));
 
 
-// map the user2-memory section (from 0xc00000) - mappe uniquement pour user2
+// map the user2-memory section (from 0xc00000) 
     for(i=0;i<1024;i++)
       pg_set_entry(&ptb4[i], PG_USR|PG_RO, i+3*1024);
 
-//    pg_set_entry(&pgd[3], PG_USR|PG_RW, page_nr(ptb4));
    pg_set_entry(&pgd_user2[3], PG_USR|PG_RW, page_nr(ptb4));
 
-
-// @ ustack1 = 0x1001000 - 0x04; !! Avance a l envers, commence donc a la deriniere @ de la page
-// @ ustack2 = 0x1002000 - 0x04;
-//  (user stacks) (from 0x1000000)
-
+// stack addresses:
 // static uint32_t   ustack1 = 0x1001000 - 0x04;
 // static uint32_t   ustack2 = 0x1002000 - 0x04; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
-// static uint32_t   user_kstack1 = 0x1004000; 
-// static uint32_t   user_kstack2 = 0x1006000;
+// static uint32_t   user_kstack1 = 0x1004000 - 0x04; 
+// static uint32_t   user_kstack2 = 0x1006000 - 0x04;
 
-   pte32_t *ptb_ustack1 = (pte32_t*)0x605000;  //0 => 1000000 = 601000
-   pte32_t *ptb_ustack2 = (pte32_t*)0x605000;
+   pte32_t *ptb_ustack1 = (pte32_t*)0x605000;   
+   pte32_t *ptb_ustack2 = (pte32_t*)0x606000;  
 
    memset((void*)ptb_ustack1, 0, PAGE_SIZE);
    memset((void*)ptb_ustack2, 0, PAGE_SIZE);
-//    for(i=0;i<1024;i++)
-//      pg_set_entry(&ptb_ustack1[i], PG_USR|PG_RW, i+4*1024);
+
    pg_set_entry(&ptb_ustack1[0], PG_USR|PG_RW, 0+4*1024); //ustack1 from 0 to 0x1001000 -0x04
    pg_set_entry(&ptb_ustack2[1], PG_USR|PG_RW, 1+4*1024); //ustack2
 
-   pg_set_entry(&ptb_ustack1[3], PG_USR|PG_RW, 3+4*1024); //user kstack1
-   pg_set_entry(&ptb_ustack1[4], PG_USR|PG_RW, 4+4*1024); //user kstack1
-   pg_set_entry(&ptb_ustack2[5], PG_USR|PG_RW, 5+4*1024); //user kstack2
-   pg_set_entry(&ptb_ustack2[6], PG_USR|PG_RW, 6+4*1024); //user kstack2
+   pg_set_entry(&ptb_ustack1[3], PG_KRN|PG_RW, 3+4*1024); //user kstack1
+//    pg_set_entry(&ptb_ustack1[4], PG_USR|PG_RW, 4+4*1024); //user kstack1
+   pg_set_entry(&ptb_ustack2[5], PG_KRN|PG_RW, 5+4*1024); //user kstack2
+//    pg_set_entry(&ptb_ustack2[6], PG_USR|PG_RW, 6+4*1024); //user kstack2
 
    pg_set_entry(&pgd_user1[4], PG_USR|PG_RW, page_nr(ptb_ustack1));
    pg_set_entry(&pgd_user2[4], PG_USR|PG_RW, page_nr(ptb_ustack2));
@@ -591,14 +441,6 @@ void identity_init()
 // load the address of the PGD to CR3 and activate paging 
    set_cr3((uint32_t)pgd);
    enable_paging();
-
-   // 5: #PF car l'adresse virtuelle 0x700000 n'est pas mappée
-   debug("kernel: á partir de PTB[0] = %p\n", ptb1[0].raw);
-   debug("PGD/PTB: a partir de PTB2[0] = %p\n", ptb2[0].raw);
-   debug("memory section user1 PTB3[0] = %p\n", ptb3[0].raw);
-   debug("memory section user2 PTB4[1] = %p\n", ptb4[0].raw);
-   debug("Adresse user1 = %p\n", &user1);
-   debug("taille ctx = %d\n", sizeof(int_ctx_t));
 
 }
 
