@@ -1,11 +1,5 @@
 /* GPLv2 (c) Airbus */
 
-// systcall pour lire le zone
-
-// question: je pense que quand je change de PGD ca ne change rien, tant que c est mappe dans un
-// pgd quelque part. J ai par exemple essaye de mapper la pile kernel de user1 dans le pgd de user2
-// et je n ai pas de PF 
-
 #include <debug.h>
 #include <segmem.h>
 #include <intr.h>
@@ -63,9 +57,9 @@ tss_t      TSS;
 
 //userstacks a partir de 0x1000000 - 1 page de 4ko chacune (derniere @)
 static uint32_t   ustack1 = 0x1001000 - 0x04;
-static uint32_t   ustack2 = 0x1002000 - 0x04; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
-static uint32_t   user_kstack1 = 0x1004000; 
-static uint32_t   user_kstack2 = 0x1006000;
+static uint32_t   ustack2 = 0x1402000 - 0x04; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
+static uint32_t   user_kstack1 = 0x1004000 - 0x04;
+static uint32_t   user_kstack2 = 0x1406000 - 0x04;
 
 // static pde32_t *pgd = (pde32_t*)0x600000; //PGD
 // static pde32_t *pgd_user1 = (pde32_t*)0x610000; //PGD de user1
@@ -79,7 +73,7 @@ struct task_struct
 {
 	int_ctx_t 	context;
 	uint32_t 	kernel_stack;
-	uint32_t 	cr3;	
+	uint32_t 	cr3;
 	struct task_struct * next_task;
 };
 
@@ -90,7 +84,7 @@ void create_task(struct task_struct* task, uint32_t function_address,
     //initialize the context as if the task was interrupted
 	task->context.eip.raw = function_address;
 	task->context.cs.raw = c3_sel;
-	task->context.eflags.raw = get_flags()|0x200;// 0x202; //set int to true , get_flags() |
+	task->context.eflags.raw = get_flags()|0x200;
 	task->context.esp.raw = user_stack;
 	task->context.ss.raw = d3_sel;
 
@@ -105,41 +99,66 @@ void create_task(struct task_struct* task, uint32_t function_address,
 // {
 //     // "pop" the context by moving the stack pointer to what was pushed before the context (eip)
 // 	task->kernel_stack = (uint32_t)(ctx) + sizeof(int_ctx_t);
-//     // put the context in the context-attribute 
-// 	memcpy(&task->context, ctx, sizeof(int_ctx_t));	
+//     // put the context in the context-attribute
+// 	memcpy(&task->context, ctx, sizeof(int_ctx_t));
 // }
 
 
 struct task_struct task1;
 struct task_struct task2;
 
-struct task_struct * current = &task1;
+struct task_struct * current;
 
 void int32_trigger()  //for test purposes
 {
     debug("int32 trigger\n");
-    asm("int $32"); 
+    asm("int $32");
     debug("\n\n\n\n");
     debug("int32 trigger retour\n");
 }
 
 void sys_counter(uint32_t *counter)
 {
-
-    //T0D0 : find out how to pass parameter to the syscall 
+// eax : syscall number
+// ebx : parameter 1 (address of counter)
    asm volatile (
-      "mov %0, %%ebx\n"
+      "mov %0, %%eax\n"
       "int $0x80"
       :
-      : "r"(counter)
+      :"a"(counter)
     );
 }
 
-//note: this is not finished... I don t know quite how to implement this yet. 
-void __regparm__(1) sys_counter_kernel(uint32_t *ptr)
+void __regparm__(1) sys_counter_kernel(int_ctx_t *ctx)
 {
-    //T0D0 : verifier l argument
-   debug("counter: %d\n", *ptr);
+    // Check if virtual address mapped in userland for the current pgd.
+    uint32_t * ptr = (uint32_t * )(ctx->gpr.eax.raw);
+    int address_in_userland = 0;
+
+    pde32_t* pgd = (pde32_t*)get_cr3();
+	pte32_t* pte = (pte32_t*)(pgd[pd32_idx(ptr)].addr << 12);
+
+    int ptb_idx = pt32_idx(ptr);
+    int pgd_idx = pd32_idx(ptr);
+    uint32_t config_pgd = pgd[pgd_idx].raw & (PG_USR | PG_P);
+    uint32_t config_ptb = pte[ptb_idx].raw & (PG_USR | PG_P);
+
+    if( config_pgd == (PG_USR | PG_P))
+    {
+		if( config_ptb == (PG_USR | PG_P))
+		{
+        	address_in_userland = 1;
+        }
+    }
+
+    if (address_in_userland)
+    {
+        debug("SYSCALL counter = %d\n",  *ptr);
+    }
+    else
+    {
+        debug("Address not in userland\n");
+    }
 
 }
 
@@ -149,7 +168,7 @@ void __attribute__ ((section(".user1"),aligned(PAGE_SIZE))) user1()
     uint32_t *v1 = (uint32_t*)0x802000;
     while(1){
         *v1 = (*v1) + 1;
-    }   
+    }
 }
 
 // note: 0xc02000 = virtual address for user2 to the shared memory
@@ -157,7 +176,7 @@ void __attribute__ ((section(".user2"),aligned(PAGE_SIZE))) user2()
 {
    while(1){
         sys_counter((uint32_t *)0xc0200);
-    }  
+    }
 }
 
 
@@ -193,9 +212,7 @@ void init_user()
    get_idtr(idtr);
 
    dsc = &idtr.desc[32];
-   debug("priviledge level: %d\n", dsc->dpl);
    dsc->dpl = 3;
-   debug("priviledge level: %d\n", dsc->dpl);
 
    dsc = &idtr.desc[0x80];
    dsc->dpl = 3;
@@ -205,9 +222,9 @@ void init_user()
    dsc->offset_2 = (uint16_t)(((uint32_t)sys_counter_kernel)>>16);
  
 // mettre les choses pertinentes dans les piles noyaux, comme si ils avaient deja ete
-// interrompues par une interruption par exemple. 
-// flags 
-// cs  
+// interrompues par une interruption par exemple.
+// flags
+// cs
 // eip  <---esp
 //    user_kstack1
 
@@ -221,14 +238,12 @@ void switch_to_task (struct task_struct * task)
    
    TSS.s0.esp = task->kernel_stack;
    TSS.s0.ss  = d3_sel;
-   debug("test1. eflags of task: 0x%x\n", task->context.eflags.raw);
 
    asm volatile (
       "mov %0, %%cr3	\n"			// Change cr3 - the address of the page directory for this task
-	  "mov %1, %%esp \n"	// Change kernel stack
+      "mov %1, %%esp \n"	// Change kernel stack
 
-    // // push the appropriate registers onto the stack in order to "resume" task execution
-	//   "mov %2,%%eax	\n"
+    // push the appropriate registers onto the stack in order to "resume" task execution
       "pushl %2	    \n" //	 ss
 	  "pushl %3	    \n" //	 esp
 	  "pushl %4	    \n"	//   eflags
@@ -245,8 +260,8 @@ void switch_to_task (struct task_struct * task)
 	  "pushl %14			\n" //	 edi
       "popa ; iret;"
       :
-      :"r"(task->cr3), 
-      "r"(task->kernel_stack), 
+      :"r"(task->cr3),
+      "r"(task->kernel_stack),
       "g"(task->context.ss.raw),
       "g"(task->context.esp.raw),
       "g"(task->context.eflags.raw),
@@ -302,7 +317,7 @@ void save_task (uint32_t * stack_ptr, struct task_struct * task)
 
 }
 
-void int32_handler(int_ctx_t* ctx) 
+void int32_handler(int_ctx_t* ctx)
 {
     asm volatile ("pusha");
     debug("\n\n\n\n");
@@ -310,7 +325,6 @@ void int32_handler(int_ctx_t* ctx)
     debug("esp: %lx\n", ctx->gpr.esp);
     if (ctx->gpr.esp.raw < 0x800000){
         debug("La tache interrompue est une tache noyau\n");
-        
     } else {
         debug("La tache interrompue est une tache utilisateur\n");
         uint32_t * stack_ptr = (uint32_t *) ctx->esp.raw;
@@ -318,7 +332,7 @@ void int32_handler(int_ctx_t* ctx)
         save_task(stack_ptr, current);
 
         //puis switch task au prochain
-        switch_to_task(current);  
+        switch_to_task(current);
     }
 
 }
@@ -330,9 +344,8 @@ void int32_handler(int_ctx_t* ctx)
 
 void init_IDT()
 {
-    // idt_reg_t idt_r; 
-    // get_idtr(idt_r);   
-
+    // idt_reg_t idt_r;
+    // get_idtr(idt_r);
     // int_desc_t *bp_dsc = &idt_r.desc[32];
 
     // bp_dsc->offset_1 = (uint16_t)((uint32_t)int32_handler);
@@ -353,7 +366,7 @@ void enable_paging()
    set_cr0(cr0|CR0_PG);
 }
 
-void identity_init()
+void paging_init()
 {
    int      i;
    pde32_t *pgd = (pde32_t*)0x600000; //PGD
@@ -380,36 +393,35 @@ void identity_init()
 
 
    //=============== map the PTBs============
-   
    for(i=0;i<1024;i++)
-      pg_set_entry(&ptb2[i], PG_KRN|PG_RW, i+1024); 
+      pg_set_entry(&ptb2[i], PG_KRN|PG_RW, i+1024);
 
    pg_set_entry(&pgd[1], PG_KRN|PG_RW, page_nr(ptb2));
    pg_set_entry(&pgd_user1[1], PG_KRN|PG_RW, page_nr(ptb2));
    pg_set_entry(&pgd_user2[1], PG_KRN|PG_RW, page_nr(ptb2));
 
 
-    // map the user1-memory section (from 0x800000) 
+// map the user1-memory section (from 0x800000)
    for(i=0;i<1024;i++)
       pg_set_entry(&ptb3[i], PG_USR|PG_RO, i+2*1024);
 
    pg_set_entry(&pgd_user1[2], PG_USR|PG_RW, page_nr(ptb3));
 
 
-// map the user2-memory section (from 0xc00000) 
+// map the user2-memory section (from 0xc00000)
     for(i=0;i<1024;i++)
       pg_set_entry(&ptb4[i], PG_USR|PG_RO, i+3*1024);
 
    pg_set_entry(&pgd_user2[3], PG_USR|PG_RW, page_nr(ptb4));
 
-// stack addresses:
-// static uint32_t   ustack1 = 0x1001000 - 0x04;
-// static uint32_t   ustack2 = 0x1002000 - 0x04; //0x 100000 = 16^5 = 1M , 0x001000 = 4k
-// static uint32_t   user_kstack1 = 0x1004000 - 0x04; 
-// static uint32_t   user_kstack2 = 0x1006000 - 0x04;
+// stack addresses (the sp decrements addresses so these are the last)
+// static uint32_t   ustack1 = 0x1001000 - 0x04; (range: 0 to  0x1001000 - 0x04)
+// static uint32_t   ustack2 = 0x1402000 - 0x04; (range: 0x1401000 to  0x1402000 - 0x04)
+// static uint32_t   user_kstack1 = 0x1004000 - 0x04; (range: 0x1003000 to  0x1404000 - 0x04)
+// static uint32_t   user_kstack2 = 0x1406000 - 0x04; (range: 0x1405000 to  0x1406000 - 0x04)
 
-   pte32_t *ptb_ustack1 = (pte32_t*)0x605000;   
-   pte32_t *ptb_ustack2 = (pte32_t*)0x606000;  
+   pte32_t *ptb_ustack1 = (pte32_t*)0x605000; //les stacks en 1000000
+   pte32_t *ptb_ustack2 = (pte32_t*)0x606000; //les stacks en 1400000
 
    memset((void*)ptb_ustack1, 0, PAGE_SIZE);
    memset((void*)ptb_ustack2, 0, PAGE_SIZE);
@@ -418,12 +430,11 @@ void identity_init()
    pg_set_entry(&ptb_ustack2[1], PG_USR|PG_RW, 1+4*1024); //ustack2
 
    pg_set_entry(&ptb_ustack1[3], PG_KRN|PG_RW, 3+4*1024); //user kstack1
-//    pg_set_entry(&ptb_ustack1[4], PG_USR|PG_RW, 4+4*1024); //user kstack1
+
    pg_set_entry(&ptb_ustack2[5], PG_KRN|PG_RW, 5+4*1024); //user kstack2
-//    pg_set_entry(&ptb_ustack2[6], PG_USR|PG_RW, 6+4*1024); //user kstack2
 
    pg_set_entry(&pgd_user1[4], PG_USR|PG_RW, page_nr(ptb_ustack1));
-   pg_set_entry(&pgd_user2[4], PG_USR|PG_RW, page_nr(ptb_ustack2));
+   pg_set_entry(&pgd_user2[5], PG_USR|PG_RW, page_nr(ptb_ustack2));
 
 // set the physical address 0x1801000 to be the shared page (chosen arbitrarily)
 
@@ -436,31 +447,32 @@ void identity_init()
    ptb_idx = pt32_idx(v2);
    pg_set_entry(&ptb4[ptb_idx], PG_USR|PG_RO, 0x1801); //read only for user2
 
-
-
-// load the address of the PGD to CR3 and activate paging 
+// load the address of the PGD to CR3 and activate paging
    set_cr3((uint32_t)pgd);
    enable_paging();
 
 }
 
 
-
 void tp()
 {
-    
    uint32_t *v2 = (uint32_t*)0x1801000;
    *v2 = 0;
-   debug("zone de memoire partagee : v2 = %d\n", *v2);
 
    init_user();
    init_IDT();
+   paging_init();
    //enable interrupts
-   identity_init();
-   asm volatile("sti; nop"); 
+   asm volatile("sti; nop");
 
    debug("START task1\n");
+   current = &task1;
    switch_to_task(&task1);
-//    int32_trigger();
    while(1);
 }
+
+/* per 28.12.2018
+Le code de user1 demarre l execution et incremente le contenu du compteur.
+Apres quelques increments, le noyau redemarre... Meme quand je
+n enable pas les interruptions--- C est curieux.
+*/
